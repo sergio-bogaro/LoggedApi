@@ -1,8 +1,9 @@
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
-from models.media import MediaStatusEnum, MediaTypeEnum
+from models.enums import MediaStatusEnum, MediaTypeEnum
 
 
 class MediaBase(BaseModel):
@@ -11,10 +12,14 @@ class MediaBase(BaseModel):
     external_id: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
     cover_url: str | None = None
-    year: str | None = None
+    release_date: datetime | None = None
     rating: float | None = Field(None, ge=0, le=10)
-    notes: str | None = None
-    extra_data: dict | None = None
+    review: str | None = None
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True
+    )
 
 
 class MediaCreate(MediaBase):
@@ -27,10 +32,9 @@ class MediaUpdate(BaseModel):
     description: str | None = None
     cover_url: str | None = None
     image_path: str | None = None
-    year: str | None = None
+    release_date: datetime | None = None
     rating: float | None = Field(None, ge=0, le=10)
-    notes: str | None = None
-    extra_data: dict | None = None
+    review: str | None = None
 
 
 class MediaResponse(MediaBase):

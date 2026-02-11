@@ -1,9 +1,15 @@
-from datetime import date, datetime
+from datetime import date as date_type
+from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, Integer, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
+from models.enums import MediaStatusEnum
+
+if TYPE_CHECKING:
+    from models.media import Media
 
 
 class MediaLog(Base):
@@ -11,10 +17,11 @@ class MediaLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     media_id: Mapped[int] = mapped_column(Integer, ForeignKey("media.id"), nullable=False, index=True)
-    date: Mapped[date] = mapped_column(Date, nullable=False)
-    progress: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    date: Mapped[date_type] = mapped_column(Date, nullable=False)
+
+    status: Mapped[MediaStatusEnum | None] = mapped_column(Enum(MediaStatusEnum), nullable=False, default=MediaStatusEnum.BACKLOG)
     rating: Mapped[float | None] = mapped_column(Float, nullable=True)
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    review: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

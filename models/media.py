@@ -1,26 +1,16 @@
-import enum
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, DateTime, Enum, Float, Integer, String, Text, func
+from pydantic import ConfigDict
+from sqlalchemy import DateTime, Enum, Float, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
+from models.enums import MediaStatusEnum, MediaTypeEnum
+from pydantic.alias_generators import to_camel
 
-
-class MediaTypeEnum(str, enum.Enum):
-    MOVIES = "movies"
-    MANGA = "manga"
-    ANIME = "anime"
-    GAME = "game"
-    BOOK = "book"
-
-
-class MediaStatusEnum(str, enum.Enum):
-    BACKLOG = "backlog"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    DROPPED = "dropped"
-    ON_HOLD = "on_hold"
+if TYPE_CHECKING:
+    from models.media_log import MediaLog
 
 
 class Media(Base):
@@ -29,26 +19,30 @@ class Media(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     external_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
-    type: Mapped[MediaTypeEnum] = mapped_column(Enum(MediaTypeEnum), nullable=False, index=True)
-    status: Mapped[MediaStatusEnum] = mapped_column(
-        Enum(MediaStatusEnum), nullable=False, default=MediaStatusEnum.BACKLOG
-    )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    type: Mapped[MediaTypeEnum] = mapped_column(Enum(MediaTypeEnum), nullable=False, index=True)
     cover_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    year: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    rating: Mapped[float | None] = mapped_column(Float, nullable=True)
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    extra_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-
+    release_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
 
+    # TODO: Pensar melhor na estrutura desses campos, talvez adicionar na tabela de logs ou criar uma tabela de status/rating/notes separados
+    status: Mapped[MediaStatusEnum | None] = mapped_column(Enum(MediaStatusEnum), nullable=False, default=MediaStatusEnum.BACKLOG)
+    rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    review: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     logs: Mapped[list["MediaLog"]] = relationship(
         "MediaLog", back_populates="media", cascade="all, delete-orphan", lazy="selectin"
     )
+
+    model_config = ConfigDict (
+        alias_generator=to_camel,  # Converte automaticamente
+        populate_by_name=True
+    )
+    
 
     def __repr__(self) -> str:
         return f"<Media(id={self.id}, title='{self.title}', type={self.type})>"

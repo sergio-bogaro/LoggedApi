@@ -3,7 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models.media import Media
-from models.media import MediaStatusEnum, MediaTypeEnum
+from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.media_log import MediaLog
 from schemas.media import MediaCreate, MediaResponse, MediaUpdate, MediaWithLogsResponse
 from services.image_storage import ImageStorageService

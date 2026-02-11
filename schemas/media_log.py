@@ -1,13 +1,21 @@
 from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
+
+from models.enums import MediaStatusEnum
 
 
 class MediaLogBase(BaseModel):
     date: date
-    progress: str | None = Field(None, max_length=255)
+    status: MediaStatusEnum | None = None
     rating: float | None = Field(None, ge=0, le=10)
-    notes: str | None = None
+    review: str | None = None
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True
+    )
 
 
 class MediaLogCreate(MediaLogBase):
@@ -16,9 +24,9 @@ class MediaLogCreate(MediaLogBase):
 
 class MediaLogUpdate(BaseModel):
     date: date | None = None
-    progress: str | None = Field(None, max_length=255)
+    status: MediaStatusEnum | None = None
     rating: float | None = Field(None, ge=0, le=10)
-    notes: str | None = None
+    review: str | None = None
 
 
 class MediaLogResponse(MediaLogBase):

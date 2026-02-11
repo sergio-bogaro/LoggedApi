@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models.media import MediaStatusEnum, MediaTypeEnum
+from models.enums import MediaStatusEnum, MediaTypeEnum
 from schemas.media import MediaCreate, MediaResponse, MediaUpdate, MediaWithLogsResponse
 from services.media_service import MediaService
 
