@@ -1,7 +1,6 @@
-from datetime import date as date_type
-from datetime import datetime
 from typing import TYPE_CHECKING
 
+import datetime
 from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, Integer, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -17,13 +16,13 @@ class MediaLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     media_id: Mapped[int] = mapped_column(Integer, ForeignKey("media.id"), nullable=False, index=True)
-    date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
 
     status: Mapped[MediaStatusEnum | None] = mapped_column(Enum(MediaStatusEnum), nullable=False, default=MediaStatusEnum.BACKLOG)
     rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     review: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
 
     media: Mapped["Media"] = relationship("Media", back_populates="logs")
 
