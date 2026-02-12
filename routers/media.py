@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models.enums import MediaStatusEnum, MediaTypeEnum
-from schemas.media import MediaCreate, MediaResponse, MediaUpdate, MediaWithLogsResponse
+from schemas.media import MediaCheckItem, MediaCreate, MediaResponse, MediaUpdate, MediaWithLogsResponse
 from services.media_service import MediaService
 
 router = APIRouter(prefix="/api/media", tags=["Media"])
@@ -36,6 +36,11 @@ def get_by_external_id(
 ):
     """Verifica se uma mídia já está na biblioteca pelo ID externo."""
     return service.find_by_external_id(db, external_id, media_type)
+
+
+@router.post("/batch-check", response_model=dict[str, MediaResponse])
+def batch_check_existing(items: list[MediaCheckItem], db: Session = Depends(get_db)):
+    return service.batch_check_existing(db, items)
 
 
 @router.post("/", response_model=MediaResponse, status_code=201)

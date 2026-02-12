@@ -49,7 +49,15 @@ class MediaResponse(MediaBase):
     updated_at: datetime
     log_count: int = 0
 
-    model_config = ConfigDict(from_attributes=True)
+
+class MediaCheckItem(BaseModel):
+    external_id: str
+    type: MediaTypeEnum
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True
+    )
 
 
 class MediaWithLogsResponse(MediaResponse):

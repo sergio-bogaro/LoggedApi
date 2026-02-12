@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from models.media import Media
 from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.media_log import MediaLog
-from schemas.media import MediaCreate, MediaResponse, MediaUpdate, MediaWithLogsResponse
+from schemas.media import MediaCheckItem, MediaCreate, MediaResponse, MediaUpdate, MediaWithLogsResponse
 from services.image_storage import ImageStorageService
 
 
@@ -53,8 +53,32 @@ class MediaService:
         media = db.execute(query).scalar_one_or_none()
         return self._to_response(db, media) if media else None
 
+    def batch_check_existing(self, db: Session, items: list[MediaCheckItem]) -> dict[str, MediaResponse]:
+        if not items:
+            return {}
+
+        conditions = [
+            (Media.external_id == item.external_id) & (Media.type == item.type)
+            for item in items
+        ]
+        
+        if len(conditions) == 1:
+            query = select(Media).where(conditions[0])
+        else:
+            from sqlalchemy import or_
+            query = select(Media).where(or_(*conditions))
+        
+        medias = db.execute(query).scalars().all()
+        
+        result = {}
+        for media in medias:
+            key = f"{media.external_id}:{media.type.value}"
+            result[key] = self._to_response(db, media)
+        
+        return result
+
     def create(self, db: Session, data: MediaCreate) -> MediaResponse:
-        """Cria uma nova mídia."""
+        # Cria nova midia verificando se já existe outra com mesmo external_id e tipo
         existing = self.find_by_external_id(db, data.external_id, data.type)
         if existing:
             raise HTTPException(
@@ -126,35 +150,29 @@ class MediaService:
             external_id=media.external_id,
             title=media.title,
             type=media.type,
-            status=media.status,
+            status=media.status, # type: ignore
             description=media.description,
             cover_url=media.cover_url,
             image_path=media.image_path,
-            year=media.year,
             rating=media.rating,
-            notes=media.notes,
-            extra_data=media.extra_data,
             created_at=media.created_at,
             updated_at=media.updated_at,
             log_count=self._get_log_count(db, media.id),
         )
-
+    # TODO: Validar esses ignonore 
     def _to_response_with_logs(self, db: Session, media: Media) -> MediaWithLogsResponse:
         return MediaWithLogsResponse(
             id=media.id,
             external_id=media.external_id,
             title=media.title,
             type=media.type,
-            status=media.status,
+            status=media.status, # type: ignore
             description=media.description,
             cover_url=media.cover_url,
             image_path=media.image_path,
-            year=media.year,
             rating=media.rating,
-            notes=media.notes,
-            extra_data=media.extra_data,
             created_at=media.created_at,
             updated_at=media.updated_at,
             log_count=self._get_log_count(db, media.id),
-            logs=media.logs,
+            logs=media.logs, # type: ignore
         )
