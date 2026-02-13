@@ -18,7 +18,7 @@ class MediaLog(Base):
     media_id: Mapped[int] = mapped_column(Integer, ForeignKey("media.id"), nullable=False, index=True)
     date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
 
-    status: Mapped[MediaStatusEnum | None] = mapped_column(Enum(MediaStatusEnum), nullable=False, default=MediaStatusEnum.BACKLOG)
+    status: Mapped[MediaStatusEnum | None] = mapped_column(Enum(MediaStatusEnum), nullable=True)
     rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     review: Mapped[str | None] = mapped_column(Text, nullable=True)
 

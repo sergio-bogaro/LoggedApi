@@ -10,8 +10,8 @@ class MediaTypeEnum(str, enum.Enum):
 
 
 class MediaStatusEnum(str, enum.Enum):
-    BACKLOG = "backlog"
     IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
     DROPPED = "dropped"
     ON_HOLD = "on_hold"
+    FOLLOWING = "following"
+    FINISHED = "finished"

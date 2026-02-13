@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pydantic import ConfigDict
-from sqlalchemy import DateTime, Enum, Float, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, Float, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -30,9 +30,10 @@ class Media(Base):
     )
 
     # TODO: Pensar melhor na estrutura desses campos, talvez adicionar na tabela de logs ou criar uma tabela de status/rating/notes separados
-    status: Mapped[MediaStatusEnum | None] = mapped_column(Enum(MediaStatusEnum), nullable=False, default=MediaStatusEnum.BACKLOG)
+    status: Mapped[MediaStatusEnum | None] = mapped_column(Enum(MediaStatusEnum), nullable=True)
     rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     review: Mapped[str | None] = mapped_column(Text, nullable=True)
+    on_list: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     logs: Mapped[list["MediaLog"]] = relationship(
         "MediaLog", back_populates="media", cascade="all, delete-orphan", lazy="selectin"

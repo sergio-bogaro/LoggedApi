@@ -85,7 +85,9 @@ class MediaService:
                 status_code=409, detail="Esta mídia já está na sua biblioteca"
             )
 
-        media = Media(**data.model_dump())
+        payload = data.model_dump()
+
+        media = Media(**payload)
         db.add(media)
         db.commit()
         db.refresh(media)
@@ -154,7 +156,10 @@ class MediaService:
             description=media.description,
             cover_url=media.cover_url,
             image_path=media.image_path,
+            on_list=media.on_list,
+            release_date=media.release_date,
             rating=media.rating,
+            review=media.review,
             created_at=media.created_at,
             updated_at=media.updated_at,
             log_count=self._get_log_count(db, media.id),
@@ -170,7 +175,10 @@ class MediaService:
             description=media.description,
             cover_url=media.cover_url,
             image_path=media.image_path,
+            on_list=media.on_list,
+            release_date=media.release_date,
             rating=media.rating,
+            review=media.review,
             created_at=media.created_at,
             updated_at=media.updated_at,
             log_count=self._get_log_count(db, media.id),

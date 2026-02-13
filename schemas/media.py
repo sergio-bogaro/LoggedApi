@@ -19,6 +19,7 @@ class MediaBase(BaseModel):
     release_date: datetime | None = None
     rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
+    on_list: bool | None = None
 
     model_config = ConfigDict(
         alias_generator=to_camel,
@@ -27,7 +28,7 @@ class MediaBase(BaseModel):
 
 
 class MediaCreate(MediaBase):
-    status: MediaStatusEnum = MediaStatusEnum.BACKLOG
+    pass
 
 
 class MediaUpdate(BaseModel):
@@ -39,11 +40,17 @@ class MediaUpdate(BaseModel):
     release_date: datetime | None = None
     rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
+    on_list: bool | None = None
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True
+    )
 
 
 class MediaResponse(MediaBase):
     id: int
-    status: MediaStatusEnum
+    status: MediaStatusEnum | None = None
     image_path: str | None = None
     created_at: datetime
     updated_at: datetime
