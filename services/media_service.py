@@ -3,6 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models.media import Media
+from models.tag import Tag
 from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.media_log import MediaLog
 from schemas.media import MediaCheckItem, MediaCreate, MediaResponse, MediaUpdate, MediaWithLogsResponse
@@ -19,6 +20,7 @@ class MediaService:
         media_type: MediaTypeEnum | None = None,
         status: MediaStatusEnum | None = None,
         search: str | None = None,
+        tags: list[str] | None = None,
     ) -> list[MediaResponse]:
         """Lista todas as mídias, com filtros opcionais."""
         query = select(Media)
@@ -29,6 +31,12 @@ class MediaService:
             query = query.where(Media.status == status)
         if search:
             query = query.where(Media.title.ilike(f"%{search}%"))
+        if tags:
+            # Filtrar por tags - media deve ter TODAS as tags especificadas
+            for tag_name in tags:
+                query = query.join(Media.tags).where(
+                    func.lower(Tag.name) == tag_name.strip().lower()
+                )
 
         query = query.order_by(Media.updated_at.desc())
         results = db.execute(query).scalars().all()
@@ -85,9 +93,15 @@ class MediaService:
                 status_code=409, detail="Esta mídia já está na sua biblioteca"
             )
 
-        payload = data.model_dump()
+        payload = data.model_dump(exclude={'tags'})
+        tag_names = data.tags or []
 
         media = Media(**payload)
+        
+        # Gerenciar tags
+        if tag_names:
+            media.tags = self._get_or_create_tags(db, tag_names)
+        
         db.add(media)
         db.commit()
         db.refresh(media)
@@ -100,7 +114,12 @@ class MediaService:
         if not media:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
-        update_data = data.model_dump(exclude_unset=True)
+        update_data = data.model_dump(exclude_unset=True, exclude={'tags'})
+        
+        # Atualizar tags se fornecidas
+        if data.tags is not None:
+            media.tags = self._get_or_create_tags(db, data.tags)
+        
         for field, value in update_data.items():
             setattr(media, field, value)
 
@@ -163,6 +182,7 @@ class MediaService:
             created_at=media.created_at,
             updated_at=media.updated_at,
             log_count=self._get_log_count(db, media.id),
+            tags=[tag.name for tag in media.tags],
         )
     # TODO: Validar esses ignonore 
     def _to_response_with_logs(self, db: Session, media: Media) -> MediaWithLogsResponse:
@@ -183,4 +203,27 @@ class MediaService:
             updated_at=media.updated_at,
             log_count=self._get_log_count(db, media.id),
             logs=media.logs, # type: ignore
+            tags=[tag.name for tag in media.tags],
         )
+
+    def _get_or_create_tags(self, db: Session, tag_names: list[str]) -> list[Tag]:
+        """Busca ou cria tags pelo nome."""
+        tags = []
+        for name in tag_names:
+            # Normalizar: remover espaços extras e converter para lowercase
+            normalized_name = name.strip().lower()
+            if not normalized_name:
+                continue
+                
+            # Buscar tag existente
+            query = select(Tag).where(func.lower(Tag.name) == normalized_name)
+            tag = db.execute(query).scalar_one_or_none()
+            
+            # Criar se não existir
+            if not tag:
+                tag = Tag(name=normalized_name)
+                db.add(tag)
+            
+            tags.append(tag)
+        
+        return tags

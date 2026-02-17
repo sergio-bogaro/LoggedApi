@@ -16,10 +16,11 @@ def list_media(
     media_type: MediaTypeEnum | None = Query(None, alias="type"),
     status: MediaStatusEnum | None = None,
     search: str | None = None,
+    tags: list[str] | None = Query(None, description="Filtrar por tags (AND)"),
     db: Session = Depends(get_db),
 ):
     """Lista todas as mídias da biblioteca, com filtros opcionais."""
-    return service.find_all(db, media_type=media_type, status=status, search=search)
+    return service.find_all(db, media_type=media_type, status=status, search=search, tags=tags)
 
 
 @router.get("/{media_id}", response_model=MediaWithLogsResponse)

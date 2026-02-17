@@ -14,6 +14,8 @@ class MediaLogBase(BaseModel):
     status: MediaStatusEnum | None = None
     rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
+    start_date: datetime.datetime | None = None
+    end_date: datetime.datetime | None = None
 
     model_config = ConfigDict(
         alias_generator=to_camel,
@@ -30,6 +32,8 @@ class MediaLogUpdate(BaseModel):
     status: MediaStatusEnum | None = None
     rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
+    start_date: datetime.datetime | None = None
+    end_date: datetime.datetime | None = None
 
 
 class MediaLogResponse(MediaLogBase):

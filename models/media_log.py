@@ -23,6 +23,8 @@ class MediaLog(Base):
     review: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
+    start_date: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=True)
+    end_date: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=True)
 
     media: Mapped["Media"] = relationship("Media", back_populates="logs")
 

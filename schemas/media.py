@@ -20,6 +20,7 @@ class MediaBase(BaseModel):
     rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
     on_list: bool | None = None
+    tags: list[str] = []
 
     model_config = ConfigDict(
         alias_generator=to_camel,
@@ -41,6 +42,7 @@ class MediaUpdate(BaseModel):
     rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
     on_list: bool | None = None
+    tags: list[str] | None = None
 
     model_config = ConfigDict(
         alias_generator=to_camel,

@@ -11,6 +11,7 @@ from pydantic.alias_generators import to_camel
 
 if TYPE_CHECKING:
     from models.media_log import MediaLog
+    from models.tag import Tag, media_tags
 
 
 class Media(Base):
@@ -37,6 +38,11 @@ class Media(Base):
 
     logs: Mapped[list["MediaLog"]] = relationship(
         "MediaLog", back_populates="media", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+    # Relacionamento Many-to-Many com Tags
+    tags: Mapped[list["Tag"]] = relationship(
+        "Tag", secondary="media_tags", back_populates="media", lazy="selectin"
     )
 
     model_config = ConfigDict (
