@@ -39,6 +39,16 @@ def get_by_external_id(
     return service.find_by_external_id(db, external_id, media_type)
 
 
+@router.get("/external/{external_id}/with-logs", response_model=MediaWithLogsResponse | None)
+def get_by_external_id_with_logs(
+    external_id: str,
+    media_type: MediaTypeEnum = Query(..., alias="type"),
+    db: Session = Depends(get_db),
+):
+    """Busca uma mídia pelo ID externo incluindo seus logs."""
+    return service.find_by_external_id_with_logs(db, external_id, media_type)
+
+
 @router.post("/batch-check", response_model=dict[str, MediaResponse])
 def batch_check_existing(items: list[MediaCheckItem], db: Session = Depends(get_db)):
     return service.batch_check_existing(db, items)

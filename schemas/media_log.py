@@ -1,13 +1,7 @@
-from typing import TYPE_CHECKING
-
 import datetime
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from models.enums import MediaStatusEnum
-
-if TYPE_CHECKING:
-    from schemas.media_log import MediaLogResponse
-
 
 class MediaLogBase(BaseModel):
     date: datetime.date
@@ -25,6 +19,7 @@ class MediaLogBase(BaseModel):
 
 class MediaLogCreate(MediaLogBase):
     media_id: int
+    date: datetime.date = Field(default_factory=datetime.date.today)
 
 
 class MediaLogUpdate(BaseModel):

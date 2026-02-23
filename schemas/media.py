@@ -1,13 +1,9 @@
-from typing import TYPE_CHECKING
-
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from models.enums import MediaStatusEnum, MediaTypeEnum
-
-if TYPE_CHECKING:
-    from schemas.media_log import MediaLogResponse
+from schemas.media_log import MediaLogResponse
 
 
 class MediaBase(BaseModel):
@@ -70,6 +66,6 @@ class MediaCheckItem(BaseModel):
 
 
 class MediaWithLogsResponse(MediaResponse):
-    logs: list["MediaLogResponse"] = []
+    logs: list[MediaLogResponse] = []
 
     model_config = ConfigDict(from_attributes=True)

@@ -54,12 +54,20 @@ class MediaService:
     def find_by_external_id(
         self, db: Session, external_id: str, media_type: MediaTypeEnum
     ) -> MediaResponse | None:
-        """Busca uma mídia pelo ID externo (API) e tipo."""
         query = select(Media).where(
             Media.external_id == external_id, Media.type == media_type
         )
         media = db.execute(query).scalar_one_or_none()
         return self._to_response(db, media) if media else None
+
+    def find_by_external_id_with_logs(
+        self, db: Session, external_id: str, media_type: MediaTypeEnum
+    ) -> MediaWithLogsResponse | None:
+        query = select(Media).where(
+            Media.external_id == external_id, Media.type == media_type
+        )
+        media = db.execute(query).scalar_one_or_none()
+        return self._to_response_with_logs(db, media) if media else None
 
     def batch_check_existing(self, db: Session, items: list[MediaCheckItem]) -> dict[str, MediaResponse]:
         if not items:
@@ -191,7 +199,7 @@ class MediaService:
             external_id=media.external_id,
             title=media.title,
             type=media.type,
-            status=media.status, # type: ignore
+            status=media.status,
             description=media.description,
             cover_url=media.cover_url,
             image_path=media.image_path,
@@ -202,7 +210,7 @@ class MediaService:
             created_at=media.created_at,
             updated_at=media.updated_at,
             log_count=self._get_log_count(db, media.id),
-            logs=media.logs, # type: ignore
+            logs=media.logs,
             tags=[tag.name for tag in media.tags],
         )
 
