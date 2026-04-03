@@ -18,6 +18,7 @@ class MediaLogBase(BaseModel):
 
 
 class MediaLogCreate(MediaLogBase):
+    user_id: int
     media_id: int
     date: datetime.date = Field(default_factory=datetime.date.today)
 
@@ -33,6 +34,7 @@ class MediaLogUpdate(BaseModel):
 
 class MediaLogResponse(MediaLogBase):
     id: int
+    user_id: int
     media_id: int
     created_at: datetime.datetime
 

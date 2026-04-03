@@ -9,12 +9,14 @@ from models.enums import MediaStatusEnum
 
 if TYPE_CHECKING:
     from models.media import Media
+    from models.user import User
 
 
 class MediaLog(Base):
     __tablename__ = "media_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     media_id: Mapped[int] = mapped_column(Integer, ForeignKey("media.id"), nullable=False, index=True)
     date: Mapped[datetime.date] = mapped_column(Date, nullable=False, default=datetime.date.today)
 
@@ -26,6 +28,7 @@ class MediaLog(Base):
     start_date: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=True)
     end_date: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=True)
 
+    user: Mapped["User"] = relationship("User", back_populates="logs")
     media: Mapped["Media"] = relationship("Media", back_populates="logs")
 
     def __repr__(self) -> str:

@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pydantic import ConfigDict
-from sqlalchemy import Boolean, DateTime, Enum, Float, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, Float, Integer, String, Text, func, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -12,12 +12,14 @@ from pydantic.alias_generators import to_camel
 if TYPE_CHECKING:
     from models.media_log import MediaLog
     from models.tag import Tag, media_tags
+    from models.user import User
 
 
 class Media(Base):
     __tablename__ = "media"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     external_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -36,6 +38,8 @@ class Media(Base):
     review: Mapped[str | None] = mapped_column(Text, nullable=True)
     on_list: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
+    user: Mapped["User"] = relationship("User", back_populates="media")
+    
     logs: Mapped[list["MediaLog"]] = relationship(
         "MediaLog", back_populates="media", cascade="all, delete-orphan", lazy="selectin"
     )

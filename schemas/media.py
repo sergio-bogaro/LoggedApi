@@ -25,7 +25,7 @@ class MediaBase(BaseModel):
 
 
 class MediaCreate(MediaBase):
-    pass
+    user_id: int
 
 
 class MediaUpdate(BaseModel):
@@ -48,6 +48,7 @@ class MediaUpdate(BaseModel):
 
 class MediaResponse(MediaBase):
     id: int
+    user_id: int
     status: MediaStatusEnum | None = None
     image_path: str | None = None
     created_at: datetime

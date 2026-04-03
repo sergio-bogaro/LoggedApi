@@ -6,8 +6,10 @@ from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from database import Base, engine
+from routers.auth import router as auth_router
 from routers.media import router as media_router
 from routers.media_log import router as media_log_router
+from routers.custom_views import router as custom_views_router
 
 
 @asynccontextmanager
@@ -40,8 +42,10 @@ app.add_middleware(
 app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
 
 # Registrar routers
+app.include_router(auth_router)
 app.include_router(media_router)
 app.include_router(media_log_router)
+app.include_router(custom_views_router)
 
 
 @app.get("/", tags=["Health"])
