@@ -17,13 +17,14 @@ class MediaService:
     def find_all(
         self,
         db: Session,
+        user_id: int,
         media_type: MediaTypeEnum | None = None,
         status: MediaStatusEnum | None = None,
         search: str | None = None,
         tags: list[str] | None = None,
     ) -> list[MediaResponse]:
         """Lista todas as mídias, com filtros opcionais."""
-        query = select(Media)
+        query = select(Media).where(Media.user_id == user_id)
 
         if media_type:
             query = query.where(Media.type == media_type)
@@ -43,38 +44,42 @@ class MediaService:
 
         return [self._to_response(db, media) for media in results]
 
-    def find_by_id(self, db: Session, media_id: int) -> MediaWithLogsResponse:
+    def find_by_id(self, db: Session, media_id: int, user_id: int) -> MediaWithLogsResponse:
         """Busca uma mídia pelo ID, incluindo seus logs."""
         media = db.get(Media, media_id)
-        if not media:
+        if not media or media.user_id != user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
         return self._to_response_with_logs(db, media)
 
     def find_by_external_id(
-        self, db: Session, external_id: str, media_type: MediaTypeEnum
+        self, db: Session, external_id: str, media_type: MediaTypeEnum, user_id: int
     ) -> MediaResponse | None:
         query = select(Media).where(
-            Media.external_id == external_id, Media.type == media_type
+            Media.external_id == external_id,
+            Media.type == media_type,
+            Media.user_id == user_id
         )
         media = db.execute(query).scalar_one_or_none()
         return self._to_response(db, media) if media else None
 
     def find_by_external_id_with_logs(
-        self, db: Session, external_id: str, media_type: MediaTypeEnum
+        self, db: Session, external_id: str, media_type: MediaTypeEnum, user_id: int
     ) -> MediaWithLogsResponse | None:
         query = select(Media).where(
-            Media.external_id == external_id, Media.type == media_type
+            Media.external_id == external_id,
+            Media.type == media_type,
+            Media.user_id == user_id
         )
         media = db.execute(query).scalar_one_or_none()
         return self._to_response_with_logs(db, media) if media else None
 
-    def batch_check_existing(self, db: Session, items: list[MediaCheckItem]) -> dict[str, MediaResponse]:
+    def batch_check_existing(self, db: Session, items: list[MediaCheckItem], user_id: int) -> dict[str, MediaResponse]:
         if not items:
             return {}
 
         conditions = [
-            (Media.external_id == item.external_id) & (Media.type == item.type)
+            (Media.external_id == item.external_id) & (Media.type == item.type) & (Media.user_id == user_id)
             for item in items
         ]
         
@@ -95,7 +100,7 @@ class MediaService:
 
     def create(self, db: Session, data: MediaCreate) -> MediaResponse:
         # Cria nova midia verificando se já existe outra com mesmo external_id e tipo
-        existing = self.find_by_external_id(db, data.external_id, data.type)
+        existing = self.find_by_external_id(db, data.external_id, data.type, data.user_id)
         if existing:
             raise HTTPException(
                 status_code=409, detail="Esta mídia já está na sua biblioteca"
@@ -116,10 +121,10 @@ class MediaService:
 
         return self._to_response(db, media)
 
-    def update(self, db: Session, media_id: int, data: MediaUpdate) -> MediaResponse:
+    def update(self, db: Session, media_id: int, data: MediaUpdate, user_id: int) -> MediaResponse:
         """Atualiza uma mídia existente."""
         media = db.get(Media, media_id)
-        if not media:
+        if not media or media.user_id != user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
         update_data = data.model_dump(exclude_unset=True, exclude={'tags'})
@@ -137,11 +142,11 @@ class MediaService:
         return self._to_response(db, media)
 
     async def upload_image(
-        self, db: Session, media_id: int, file: UploadFile
+        self, db: Session, media_id: int, file: UploadFile, user_id: int
     ) -> MediaResponse:
         """Faz upload de uma imagem e associa a uma mídia."""
         media = db.get(Media, media_id)
-        if not media:
+        if not media or media.user_id != user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
         # Remove imagem anterior se existir
@@ -155,10 +160,10 @@ class MediaService:
 
         return self._to_response(db, media)
 
-    def delete(self, db: Session, media_id: int) -> None:
+    def delete(self, db: Session, media_id: int, user_id: int) -> None:
         """Remove uma mídia e sua imagem associada."""
         media = db.get(Media, media_id)
-        if not media:
+        if not media or media.user_id != user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
         if media.image_path:
@@ -176,6 +181,7 @@ class MediaService:
     def _to_response(self, db: Session, media: Media) -> MediaResponse:
         return MediaResponse(
             id=media.id,
+            user_id=media.user_id,
             external_id=media.external_id,
             title=media.title,
             type=media.type,
@@ -196,6 +202,7 @@ class MediaService:
     def _to_response_with_logs(self, db: Session, media: Media) -> MediaWithLogsResponse:
         return MediaWithLogsResponse(
             id=media.id,
+            user_id=media.user_id,
             external_id=media.external_id,
             title=media.title,
             type=media.type,

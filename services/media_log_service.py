@@ -8,10 +8,10 @@ from schemas.media_log import MediaLogCreate, MediaLogResponse, MediaLogUpdate
 
 
 class MediaLogService:
-    def find_by_media(self, db: Session, media_id: int) -> list[MediaLogResponse]:
+    def find_by_media(self, db: Session, media_id: int, user_id: int) -> list[MediaLogResponse]:
         """Lista todos os logs de uma mídia específica."""
         media = db.get(Media, media_id)
-        if not media:
+        if not media or media.user_id != user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
         query = (
@@ -23,10 +23,10 @@ class MediaLogService:
 
         return [MediaLogResponse.model_validate(log) for log in results]
 
-    def find_by_id(self, db: Session, log_id: int) -> MediaLogResponse:
+    def find_by_id(self, db: Session, log_id: int, user_id: int) -> MediaLogResponse:
         """Busca um log pelo ID."""
         log = db.get(MediaLog, log_id)
-        if not log:
+        if not log or log.user_id != user_id:
             raise HTTPException(status_code=404, detail="Log não encontrado")
 
         return MediaLogResponse.model_validate(log)
@@ -44,10 +44,10 @@ class MediaLogService:
 
         return MediaLogResponse.model_validate(log)
 
-    def update(self, db: Session, log_id: int, data: MediaLogUpdate) -> MediaLogResponse:
+    def update(self, db: Session, log_id: int, data: MediaLogUpdate, user_id: int) -> MediaLogResponse:
         """Atualiza um log existente."""
         log = db.get(MediaLog, log_id)
-        if not log:
+        if not log or log.user_id != user_id:
             raise HTTPException(status_code=404, detail="Log não encontrado")
 
         update_data = data.model_dump(exclude_unset=True)
@@ -59,10 +59,10 @@ class MediaLogService:
 
         return MediaLogResponse.model_validate(log)
 
-    def delete(self, db: Session, log_id: int) -> None:
+    def delete(self, db: Session, log_id: int, user_id: int) -> None:
         """Remove um log."""
         log = db.get(MediaLog, log_id)
-        if not log:
+        if not log or log.user_id != user_id:
             raise HTTPException(status_code=404, detail="Log não encontrado")
 
         db.delete(log)
