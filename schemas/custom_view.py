@@ -1,5 +1,6 @@
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 
 class CustomViewBase(BaseModel):
@@ -12,6 +13,11 @@ class CustomViewBase(BaseModel):
     is_pinned: bool = False
     filters: dict | None = None
     display_settings: dict | None = None
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
 
 
 class CustomViewCreate(CustomViewBase):
@@ -29,6 +35,11 @@ class CustomViewUpdate(BaseModel):
     filters: dict | None = None
     display_settings: dict | None = None
 
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
+
 
 class CustomViewResponse(CustomViewBase):
     id: int
@@ -36,8 +47,11 @@ class CustomViewResponse(CustomViewBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(
+        from_attributes=True,
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
 
 
 class CustomViewReorder(BaseModel):
