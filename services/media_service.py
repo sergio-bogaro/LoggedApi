@@ -242,3 +242,17 @@ class MediaService:
             tags.append(tag)
         
         return tags
+
+    async def remove_image(self, db: Session, media_id: int, user_id: int) -> MediaResponse:
+      """Remove a imagem customizada de uma mídia."""
+      media = db.get(Media, media_id)
+      if not media or media.user_id != user_id:
+          raise HTTPException(status_code=404, detail="Mídia não encontrada")
+
+      if media.image_path:
+          self.image_service.delete(media.image_path)
+          media.image_path = None
+          db.commit()
+          db.refresh(media)
+
+      return self._to_response(db, media)
