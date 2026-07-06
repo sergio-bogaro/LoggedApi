@@ -25,6 +25,7 @@ class MediaService:
         search: str | None = None,
         tags: list[str] | None = None,
         has_logs: bool | None = None,
+        limit: int | None = None,
     ) -> list[MediaResponse]:
         """Lista todas as mídias, com filtros opcionais."""
         query = select(Media).where(Media.user_id == user_id)
@@ -49,6 +50,9 @@ class MediaService:
 
         if has_logs is True:
             responses = [r for r in responses if r.last_log_date is not None]
+
+        if limit is not None and limit > 0:
+            responses = responses[:limit]
 
         return responses
 
