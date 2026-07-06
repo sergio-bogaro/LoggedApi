@@ -9,6 +9,8 @@ from database import Base, engine
 from routers.auth import router as auth_router
 from routers.media import router as media_router
 from routers.media_log import router as media_log_router
+from routers.favorites import router as favorites_router
+from routers.backlog import router as backlog_router
 from routers.custom_views import router as custom_views_router
 
 
@@ -45,6 +47,8 @@ app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads"
 app.include_router(auth_router)
 app.include_router(media_router)
 app.include_router(media_log_router)
+app.include_router(favorites_router)
+app.include_router(backlog_router)
 app.include_router(custom_views_router)
 
 

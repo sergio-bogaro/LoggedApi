@@ -108,7 +108,7 @@ class CustomViewService:
                 "icon": "📌",
                 "color": "#8b5cf6",
                 "order": 2,
-                "filters": {"on_list": True},
+                "filters": {},
                 "display_settings": {"view_mode": "list", "sort_by": "created_at", "sort_order": "desc"}
             },
             {

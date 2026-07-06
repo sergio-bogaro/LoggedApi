@@ -15,7 +15,6 @@ class MediaBase(BaseModel):
     release_date: datetime | None = None
     rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
-    on_list: bool | None = None
     tags: list[str] = []
 
     model_config = ConfigDict(
@@ -37,7 +36,6 @@ class MediaUpdate(BaseModel):
     release_date: datetime | None = None
     rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
-    on_list: bool | None = None
     tags: list[str] | None = None
 
     model_config = ConfigDict(
