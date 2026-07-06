@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
@@ -52,6 +52,7 @@ class MediaResponse(MediaBase):
     created_at: datetime
     updated_at: datetime
     log_count: int = 0
+    last_log_date: date | None = None
 
 
 class MediaCheckItem(BaseModel):

@@ -1,3 +1,5 @@
+from datetime import date, datetime
+
 from fastapi import HTTPException, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -22,6 +24,7 @@ class MediaService:
         status: MediaStatusEnum | None = None,
         search: str | None = None,
         tags: list[str] | None = None,
+        has_logs: bool | None = None,
     ) -> list[MediaResponse]:
         """Lista todas as mídias, com filtros opcionais."""
         query = select(Media).where(Media.user_id == user_id)
@@ -42,7 +45,12 @@ class MediaService:
         query = query.order_by(Media.updated_at.desc())
         results = db.execute(query).scalars().all()
 
-        return [self._to_response(db, media) for media in results]
+        responses = [self._to_response(db, media) for media in results]
+
+        if has_logs is True:
+            responses = [r for r in responses if r.last_log_date is not None]
+
+        return responses
 
     def find_by_id(self, db: Session, media_id: int, user_id: int) -> MediaWithLogsResponse:
         """Busca uma mídia pelo ID, incluindo seus logs."""
@@ -178,6 +186,12 @@ class MediaService:
         ).scalar()
         return result or 0
 
+    def _get_last_log_date(self, media: Media) -> date | None:
+        """Retorna a data do log mais recente de uma mídia."""
+        if not media.logs:
+            return None
+        return max(log.date for log in media.logs if log.date is not None)
+
     def _to_response(self, db: Session, media: Media) -> MediaResponse:
         return MediaResponse(
             id=media.id,
@@ -195,6 +209,7 @@ class MediaService:
             created_at=media.created_at,
             updated_at=media.updated_at,
             log_count=self._get_log_count(db, media.id),
+            last_log_date=self._get_last_log_date(media),
             tags=[tag.name for tag in media.tags],
         )
     # TODO: Validar esses ignonore 
@@ -215,6 +230,7 @@ class MediaService:
             created_at=media.created_at,
             updated_at=media.updated_at,
             log_count=self._get_log_count(db, media.id),
+            last_log_date=self._get_last_log_date(media),
             logs=media.logs,
             tags=[tag.name for tag in media.tags],
         )
