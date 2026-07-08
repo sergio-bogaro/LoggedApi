@@ -26,6 +26,7 @@ class MediaService:
         tags: list[str] | None = None,
         has_logs: bool | None = None,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[MediaResponse]:
         """Lista todas as mídias, com filtros opcionais."""
         query = select(Media).where(Media.user_id == user_id)
@@ -51,6 +52,12 @@ class MediaService:
         if has_logs is True:
             responses = [r for r in responses if r.last_log_date is not None]
 
+        # Sort by last_log_date descending (most recent first) when filtering by logs
+        if has_logs is True:
+            responses.sort(key=lambda r: r.last_log_date or date.min, reverse=True)
+
+        # Apply offset and limit
+        responses = responses[offset:]
         if limit is not None and limit > 0:
             responses = responses[:limit]
 

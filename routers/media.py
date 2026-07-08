@@ -20,10 +20,11 @@ def list_media(
     tags: list[str] | None = Query(None, description="Filtrar por tags (AND)"),
     has_logs: bool | None = Query(None, description="Apenas mídias com logs"),
     limit: int | None = Query(None, ge=1, description="Limitar quantidade de resultados"),
+    offset: int = Query(0, ge=0, description="Número de itens a pular (paginação)"),
     db: Session = Depends(get_db),
 ):
     """Lista todas as mídias da biblioteca, com filtros opcionais."""
-    return service.find_all(db, user_id=user_id, media_type=media_type, status=status, search=search, tags=tags, has_logs=has_logs, limit=limit)
+    return service.find_all(db, user_id=user_id, media_type=media_type, status=status, search=search, tags=tags, has_logs=has_logs, limit=limit, offset=offset)
 
 
 @router.get("/{media_id}", response_model=MediaWithLogsResponse)
