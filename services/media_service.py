@@ -179,6 +179,25 @@ class MediaService:
 
         return self._to_response(db, media)
 
+    async def upload_image_from_url(
+        self, db: Session, media_id: int, image_url: str, user_id: int
+    ) -> MediaResponse:
+        """Baixa uma imagem de uma URL externa e associa a uma mídia."""
+        media = db.get(Media, media_id)
+        if not media or media.user_id != user_id:
+            raise HTTPException(status_code=404, detail="Mídia não encontrada")
+
+        # Remove imagem anterior se existir
+        if media.image_path:
+            self.image_service.delete(media.image_path)
+
+        filename = await self.image_service.store_from_url(image_url)
+        media.image_path = filename
+        db.commit()
+        db.refresh(media)
+
+        return self._to_response(db, media)
+
     def delete(self, db: Session, media_id: int, user_id: int) -> None:
         """Remove uma mídia e sua imagem associada."""
         media = db.get(Media, media_id)

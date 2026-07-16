@@ -1,3 +1,5 @@
+from pydantic import BaseModel, HttpUrl
+
 from fastapi import APIRouter, Depends, Query, UploadFile
 from sqlalchemy.orm import Session
 
@@ -9,6 +11,10 @@ from services.media_service import MediaService
 router = APIRouter(prefix="/api/media", tags=["Media"])
 
 service = MediaService()
+
+
+class ImageUrlPayload(BaseModel):
+    url: str
 
 
 @router.get("/", response_model=list[MediaResponse])
@@ -78,6 +84,14 @@ async def upload_image(
 ):
     """Faz upload de uma imagem customizada para a mídia."""
     return await service.upload_image(db, media_id, file, user_id)
+
+
+@router.post("/{media_id}/image-url", response_model=MediaResponse)
+async def upload_image_from_url(
+    media_id: int, user_id: int, payload: ImageUrlPayload, db: Session = Depends(get_db)
+):
+    """Baixa uma imagem de uma URL externa e associa a uma mídia."""
+    return await service.upload_image_from_url(db, media_id, payload.url, user_id)
 
 
 @router.delete("/{media_id}", status_code=204)
