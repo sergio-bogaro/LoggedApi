@@ -9,6 +9,13 @@ class Settings(BaseSettings):
     upload_dir: str = "./uploads"
     cors_origins: str = '["http://localhost:5173","http://localhost:3000"]'
 
+    # IGDB / Twitch OAuth
+    igdb_client_id: str | None = None
+    igdb_client_secret: str | None = None
+    igdb_base_url: str = "https://api.igdb.com/v4"
+    igdb_oauth_url: str = "https://id.twitch.tv/oauth2/token"
+    igdb_request_timeout: float = 15.0
+
     @property
     def cors_origins_list(self) -> list[str]:
         return json.loads(self.cors_origins)
