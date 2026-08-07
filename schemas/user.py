@@ -1,8 +1,12 @@
 from datetime import datetime
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 
 class UserBase(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     username: str = Field(..., min_length=3, max_length=100)
 
 
@@ -11,11 +15,15 @@ class UserCreate(UserBase):
 
 
 class UserLogin(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     username: str
     password: str
 
 
 class UserSettings(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     rating_mode: str = "stars5"  # "numeric", "stars5", "stars10"
     view_mode: str = "list"  # "list", "grid"
     track_movies: bool = True
@@ -26,6 +34,8 @@ class UserSettings(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     username: str | None = None
     password: str | None = None
     rating_mode: str | None = None
@@ -38,6 +48,10 @@ class UserUpdate(BaseModel):
 
 
 class UserResponse(UserBase):
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, from_attributes=True
+    )
+
     id: int
     created_at: datetime
     updated_at: datetime
@@ -49,10 +63,9 @@ class UserResponse(UserBase):
     track_games: bool
     track_books: bool
 
-    class Config:
-        from_attributes = True
-
 
 class LoginResponse(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     user: UserResponse
     message: str = "Login successful"
