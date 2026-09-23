@@ -222,6 +222,23 @@ class MediaService:
             return None
         return max(log.date for log in media.logs if log.date is not None)
 
+    def _resolve_status(self, media: Media) -> MediaStatusEnum | None:
+        """Status atual da mídia.
+
+        Mídias criadas antes de `MediaCreate` aceitar `status` — ou criadas pelo
+        fluxo de troca de imagem, que não envia status — têm a coluna nula. Nesse
+        caso o status do log mais recente é a melhor resposta, em vez de expor um
+        vazio que a listagem não consegue explicar.
+        """
+        if media.status is not None:
+            return media.status
+
+        logs = [log for log in media.logs if log.date is not None]
+        if not logs:
+            return None
+
+        return max(logs, key=lambda log: log.date).status
+
     def _to_response(self, db: Session, media: Media) -> MediaResponse:
         return MediaResponse(
             id=media.id,
@@ -229,7 +246,7 @@ class MediaService:
             external_id=media.external_id,
             title=media.title,
             type=media.type,
-            status=media.status, # type: ignore
+            status=self._resolve_status(media),
             description=media.description,
             cover_url=media.cover_url,
             image_path=media.image_path,
@@ -250,7 +267,7 @@ class MediaService:
             external_id=media.external_id,
             title=media.title,
             type=media.type,
-            status=media.status,
+            status=self._resolve_status(media),
             description=media.description,
             cover_url=media.cover_url,
             image_path=media.image_path,

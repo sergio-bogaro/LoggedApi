@@ -25,6 +25,7 @@ class MediaBase(BaseModel):
 
 class MediaCreate(MediaBase):
     user_id: int
+    status: MediaStatusEnum | None = None
 
 
 class MediaUpdate(BaseModel):
