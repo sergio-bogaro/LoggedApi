@@ -1,13 +1,33 @@
+import datetime
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from database import get_db
-from schemas.media_log import MediaLogCreate, MediaLogResponse, MediaLogUpdate
+from schemas.media_log import (
+    MediaLogCreate,
+    MediaLogResponse,
+    MediaLogUpdate,
+    MediaLogWithMediaResponse,
+)
 from services.media_log_service import MediaLogService
 
 router = APIRouter(prefix="/api/media-logs", tags=["Media Logs"])
 
 service = MediaLogService()
+
+
+@router.get("/", response_model=list[MediaLogWithMediaResponse])
+def list_logs(
+    user_id: int,
+    start: datetime.date | None = None,
+    end: datetime.date | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Lista todos os logs do usuário, opcionalmente recortados por período."""
+    return service.find_by_user(db, user_id, start, end, limit, offset)
 
 
 @router.get("/media/{media_id}", response_model=list[MediaLogResponse])

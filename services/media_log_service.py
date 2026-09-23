@@ -1,13 +1,72 @@
+import datetime
+
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from models.media import Media
 from models.media_log import MediaLog
-from schemas.media_log import MediaLogCreate, MediaLogResponse, MediaLogUpdate
+from schemas.media_log import (
+    MediaLogCreate,
+    MediaLogResponse,
+    MediaLogUpdate,
+    MediaLogWithMediaResponse,
+    MediaSummary,
+)
 
 
 class MediaLogService:
+    def find_by_user(
+        self,
+        db: Session,
+        user_id: int,
+        start: datetime.date | None = None,
+        end: datetime.date | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[MediaLogWithMediaResponse]:
+        """Lista todos os logs do usuário, do mais recente para o mais antigo.
+
+        O join com `Media` é explícito em vez de `selectinload(MediaLog.media)`
+        de propósito: `Media.logs` é lazy="selectin", então carregar cada mídia
+        pelo ORM traria todos os logs dela junto — uma query extra por nada.
+        """
+        query = (
+            select(MediaLog, Media)
+            .join(Media, MediaLog.media_id == Media.id)
+            .where(MediaLog.user_id == user_id)
+            .order_by(MediaLog.date.desc(), MediaLog.id.desc())
+        )
+
+        if start is not None:
+            query = query.where(MediaLog.date >= start)
+        if end is not None:
+            query = query.where(MediaLog.date <= end)
+
+        if offset:
+            query = query.offset(offset)
+        if limit is not None and limit > 0:
+            query = query.limit(limit)
+
+        rows = db.execute(query).all()
+
+        return [
+            MediaLogWithMediaResponse(
+                id=log.id,
+                user_id=log.user_id,
+                media_id=log.media_id,
+                date=log.date,
+                status=log.status,
+                rating=log.rating,
+                review=log.review,
+                start_date=log.start_date,
+                end_date=log.end_date,
+                created_at=log.created_at,
+                media=MediaSummary.model_validate(media),
+            )
+            for log, media in rows
+        ]
+
     def find_by_media(self, db: Session, media_id: int, user_id: int) -> list[MediaLogResponse]:
         """Lista todos os logs de uma mídia específica."""
         media = db.get(Media, media_id)
