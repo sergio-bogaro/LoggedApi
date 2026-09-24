@@ -7,6 +7,7 @@ class MediaTypeEnum(str, enum.Enum):
     ANIME = "anime"
     GAME = "game"
     BOOK = "book"
+    MUSIC = "music"
 
 
 class MediaStatusEnum(str, enum.Enum):

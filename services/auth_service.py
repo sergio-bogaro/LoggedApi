@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 
 from models.user import User
+from models.media_list_item import MediaListItem
 from schemas.user import UserCreate, UserLogin, UserUpdate
 from services.custom_view_service import CustomViewService
 
@@ -88,5 +89,6 @@ class AuthService:
     def delete_user(db: Session, user_id: int) -> None:
         """Deleta um usuário"""
         user = AuthService.get_user_by_id(db, user_id)
+        db.query(MediaListItem).filter(MediaListItem.user_id == user_id).delete()
         db.delete(user)
         db.commit()

@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from database import Base, engine
+from database import Base, engine, ensure_columns
 from routers.auth import router as auth_router
 from routers.media import router as media_router
 from routers.media_log import router as media_log_router
@@ -17,8 +18,9 @@ from routers.igdb import router as igdb_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: cria as tabelas no banco
+    # Startup: cria as tabelas no banco e aplica colunas novas em tabelas existentes
     Base.metadata.create_all(bind=engine)
+    ensure_columns()
     print("Database tables created")
     print(f"Upload directory: {settings.upload_path}")
     yield
@@ -31,6 +33,13 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Erros de validação de domínio (upload inválido, jogo/credenciais IGDB etc.)
+# chegam como ValueError; sem isso virariam 500.
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
 
 # CORS — permite o frontend React acessar a API
 app.add_middleware(

@@ -34,6 +34,7 @@ class User(Base):
     track_manga: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     track_games: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     track_books: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    track_music: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # Relacionamentos
     media: Mapped[list["Media"]] = relationship(
@@ -49,4 +50,4 @@ class User(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<User(id={self.id}, username={self.username}, email={self.email})>"
+        return f"<User(id={self.id}, username={self.username})>"

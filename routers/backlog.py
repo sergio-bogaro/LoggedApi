@@ -17,12 +17,6 @@ service = MediaListService()
 LIST_TYPE = "backlog"
 
 
-@router.get("/{user_id}", response_model=list[MediaListItemResponse])
-def list_backlog(user_id: int, db: Session = Depends(get_db)):
-    """Lista todas as mídias do backlog de um usuário."""
-    return service.get_list(db, user_id=user_id, list_type=LIST_TYPE)
-
-
 @router.get("/check", response_model=MediaListItemCheckResponse)
 def check_backlog(
     user_id: int,
@@ -32,6 +26,12 @@ def check_backlog(
 ):
     """Verifica se uma mídia está no backlog de um usuário."""
     return service.check_in_list(db, user_id, external_id, media_type.value, LIST_TYPE)
+
+
+@router.get("/{user_id}", response_model=list[MediaListItemResponse])
+def list_backlog(user_id: int, db: Session = Depends(get_db)):
+    """Lista todas as mídias do backlog de um usuário."""
+    return service.get_list(db, user_id=user_id, list_type=LIST_TYPE)
 
 
 @router.post("/", response_model=MediaListItemResponse, status_code=201)

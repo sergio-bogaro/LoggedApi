@@ -59,6 +59,11 @@ class CustomViewReorder(BaseModel):
     view_id: int
     new_order: int
 
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
+
 
 # Exemplos de estruturas para filters e display_settings
 """

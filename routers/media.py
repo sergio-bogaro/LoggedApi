@@ -33,6 +33,12 @@ def list_media(
     return service.find_all(db, user_id=user_id, media_type=media_type, status=status, search=search, tags=tags, has_logs=has_logs, limit=limit, offset=offset)
 
 
+@router.get("/tags", response_model=list[str])
+def list_tags(user_id: int, db: Session = Depends(get_db)):
+    """Lista as tags distintas das mídias do usuário."""
+    return service.list_tags(db, user_id)
+
+
 @router.get("/{media_id}", response_model=MediaWithLogsResponse)
 def get_media(media_id: int, user_id: int, db: Session = Depends(get_db)):
     """Busca uma mídia pelo ID, incluindo seus logs."""

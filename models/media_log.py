@@ -24,6 +24,11 @@ class MediaLog(Base):
     rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     review: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Progresso consumido (ex.: 12 de 24 episódios). A unidade é derivada do
+    # tipo de mídia no frontend; aqui guardamos apenas os valores.
+    progress: Mapped[float | None] = mapped_column(Float, nullable=True)
+    progress_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
     start_date: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=True)
     end_date: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=True)

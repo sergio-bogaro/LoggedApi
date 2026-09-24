@@ -5,9 +5,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models.media import Media
-from models.tag import Tag
+from models.tag import Tag, media_tags
 from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.media_log import MediaLog
+from models.media_list_item import MediaListItem
 from schemas.media import MediaCheckItem, MediaCreate, MediaResponse, MediaUpdate, MediaWithLogsResponse
 from services.image_storage import ImageStorageService
 
@@ -62,6 +63,18 @@ class MediaService:
             responses = responses[:limit]
 
         return responses
+
+    def list_tags(self, db: Session, user_id: int) -> list[str]:
+        """Lista as tags distintas usadas nas mídias do usuário."""
+        query = (
+            select(Tag.name)
+            .join(media_tags, media_tags.c.tag_id == Tag.id)
+            .join(Media, Media.id == media_tags.c.media_id)
+            .where(Media.user_id == user_id)
+            .distinct()
+            .order_by(Tag.name)
+        )
+        return [row[0] for row in db.execute(query).all()]
 
     def find_by_id(self, db: Session, media_id: int, user_id: int) -> MediaWithLogsResponse:
         """Busca uma mídia pelo ID, incluindo seus logs."""
@@ -206,6 +219,10 @@ class MediaService:
 
         if media.image_path:
             self.image_service.delete(media.image_path)
+
+        # Remove entradas de favoritos/backlog antes da mídia (não há relationship
+        # em MediaListItem), evitando itens órfãos.
+        db.query(MediaListItem).filter(MediaListItem.media_id == media_id).delete()
 
         db.delete(media)
         db.commit()

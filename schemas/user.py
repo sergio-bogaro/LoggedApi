@@ -31,6 +31,7 @@ class UserSettings(BaseModel):
     track_manga: bool = True
     track_games: bool = True
     track_books: bool = True
+    track_music: bool = True
 
 
 class UserUpdate(BaseModel):
@@ -45,6 +46,7 @@ class UserUpdate(BaseModel):
     track_manga: bool | None = None
     track_games: bool | None = None
     track_books: bool | None = None
+    track_music: bool | None = None
 
 
 class UserResponse(UserBase):
@@ -62,6 +64,7 @@ class UserResponse(UserBase):
     track_manga: bool
     track_games: bool
     track_books: bool
+    track_music: bool
 
 
 class LoginResponse(BaseModel):
