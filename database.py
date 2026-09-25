@@ -28,10 +28,6 @@ class Base(DeclarativeBase):
 #
 # Formato: { "tabela": { "coluna": "DDL SQL (tipo + default/constraints)" } }
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
-    "media_log": {
-        "progress": "FLOAT",
-        "progress_total": "FLOAT",
-    },
     "users": {
         "track_music": "BOOLEAN NOT NULL DEFAULT 1",
     },

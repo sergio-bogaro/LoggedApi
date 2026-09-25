@@ -59,8 +59,6 @@ class MediaLogService:
                 status=log.status,
                 rating=log.rating,
                 review=log.review,
-                progress=log.progress,
-                progress_total=log.progress_total,
                 start_date=log.start_date,
                 end_date=log.end_date,
                 created_at=log.created_at,

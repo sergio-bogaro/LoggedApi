@@ -1,32 +1,10 @@
 import datetime
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from models.enums import MediaStatusEnum, MediaTypeEnum
 
 
-class ProgressFields(BaseModel):
-    """Campos de progresso compartilhados por criação, atualização e resposta."""
-
-    progress: float | None = Field(None, ge=0)
-    progress_total: float | None = Field(None, ge=0)
-
-    model_config = ConfigDict(
-        alias_generator=to_camel,
-        populate_by_name=True,
-    )
-
-    @model_validator(mode="after")
-    def _check_progress(self):
-        if (
-            self.progress is not None
-            and self.progress_total is not None
-            and self.progress > self.progress_total
-        ):
-            raise ValueError("progress cannot be greater than progressTotal")
-        return self
-
-
-class MediaLogBase(ProgressFields):
+class MediaLogBase(BaseModel):
     date: datetime.date
     status: MediaStatusEnum | None = None
     rating: float | None = Field(None, ge=0, le=10)
@@ -46,13 +24,18 @@ class MediaLogCreate(MediaLogBase):
     date: datetime.date = Field(default_factory=datetime.date.today)
 
 
-class MediaLogUpdate(ProgressFields):
+class MediaLogUpdate(BaseModel):
     date: datetime.date | None = None
     status: MediaStatusEnum | None = None
     rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
     start_date: datetime.datetime | None = None
     end_date: datetime.datetime | None = None
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True
+    )
 
 
 class MediaLogResponse(MediaLogBase):
