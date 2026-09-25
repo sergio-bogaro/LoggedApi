@@ -64,16 +64,19 @@ class MediaService:
 
         return responses
 
-    def list_tags(self, db: Session, user_id: int) -> list[str]:
-        """Lista as tags distintas usadas nas mídias do usuário."""
+    def list_tags(
+        self, db: Session, user_id: int, media_type: MediaTypeEnum | None = None
+    ) -> list[str]:
+        """Lista as tags distintas usadas nas mídias do usuário, opcionalmente por tipo."""
         query = (
             select(Tag.name)
             .join(media_tags, media_tags.c.tag_id == Tag.id)
             .join(Media, Media.id == media_tags.c.media_id)
             .where(Media.user_id == user_id)
-            .distinct()
-            .order_by(Tag.name)
         )
+        if media_type:
+            query = query.where(Media.type == media_type)
+        query = query.distinct().order_by(Tag.name)
         return [row[0] for row in db.execute(query).all()]
 
     def find_by_id(self, db: Session, media_id: int, user_id: int) -> MediaWithLogsResponse:

@@ -34,9 +34,13 @@ def list_media(
 
 
 @router.get("/tags", response_model=list[str])
-def list_tags(user_id: int, db: Session = Depends(get_db)):
-    """Lista as tags distintas das mídias do usuário."""
-    return service.list_tags(db, user_id)
+def list_tags(
+    user_id: int,
+    media_type: MediaTypeEnum | None = Query(None, alias="type"),
+    db: Session = Depends(get_db),
+):
+    """Lista as tags distintas das mídias do usuário, opcionalmente por tipo."""
+    return service.list_tags(db, user_id, media_type)
 
 
 @router.get("/{media_id}", response_model=MediaWithLogsResponse)
