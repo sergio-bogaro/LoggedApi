@@ -21,7 +21,7 @@ class MediaService:
         self,
         db: Session,
         user_id: int,
-        media_type: MediaTypeEnum | None = None,
+        media_types: list[MediaTypeEnum] | None = None,
         status: MediaStatusEnum | None = None,
         search: str | None = None,
         tags: list[str] | None = None,
@@ -32,8 +32,8 @@ class MediaService:
         """Lista todas as mídias, com filtros opcionais."""
         query = select(Media).where(Media.user_id == user_id)
 
-        if media_type:
-            query = query.where(Media.type == media_type)
+        if media_types:
+            query = query.where(Media.type.in_(media_types))
         if status:
             query = query.where(Media.status == status)
         if search:

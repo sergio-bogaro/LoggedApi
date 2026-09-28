@@ -20,7 +20,7 @@ class ImageUrlPayload(BaseModel):
 @router.get("/", response_model=list[MediaResponse])
 def list_media(
     user_id: int,
-    media_type: MediaTypeEnum | None = Query(None, alias="type"),
+    media_type: list[MediaTypeEnum] | None = Query(None, alias="type"),
     status: MediaStatusEnum | None = None,
     search: str | None = None,
     tags: list[str] | None = Query(None, description="Filtrar por tags (AND)"),
@@ -30,7 +30,7 @@ def list_media(
     db: Session = Depends(get_db),
 ):
     """Lista todas as mídias da biblioteca, com filtros opcionais."""
-    return service.find_all(db, user_id=user_id, media_type=media_type, status=status, search=search, tags=tags, has_logs=has_logs, limit=limit, offset=offset)
+    return service.find_all(db, user_id=user_id, media_types=media_type, status=status, search=search, tags=tags, has_logs=has_logs, limit=limit, offset=offset)
 
 
 @router.get("/tags", response_model=list[str])
