@@ -21,9 +21,9 @@ class IgdbService:
     """Service for IGDB API with Twitch OAuth2 token management."""
 
     def __init__(self) -> None:
-        self._token: str | None = None
-        self._token_expires_at: datetime | None = None
-        self._lock = asyncio.Lock()
+        # Caches por client_id — cada usuário pode ter as próprias credenciais.
+        self._tokens: dict[str, tuple[str, datetime]] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -33,56 +33,70 @@ class IgdbService:
             )
         return self._client
 
-    async def _ensure_token(self) -> str:
-        """Get a valid Twitch OAuth token, refreshing if needed."""
+    async def _ensure_token(self, client_id: str, client_secret: str) -> str:
+        """Get a valid Twitch OAuth token for the given credentials, refreshing if needed."""
         now = datetime.now()
-        if self._token and self._token_expires_at and now < self._token_expires_at:
-            return self._token
+        cached = self._tokens.get(client_id)
+        if cached and now < cached[1]:
+            return cached[0]
 
-        async with self._lock:
-            # Double-check after acquiring lock
-            if self._token and self._token_expires_at and datetime.now() < self._token_expires_at:
-                return self._token
-
-            if not settings.igdb_client_id or not settings.igdb_client_secret:
-                raise ValueError(
-                    "IGDB_CLIENT_ID and IGDB_CLIENT_SECRET must be set in .env"
-                )
+        lock = self._locks.setdefault(client_id, asyncio.Lock())
+        async with lock:
+            # Double-check after acquiring the lock
+            cached = self._tokens.get(client_id)
+            if cached and datetime.now() < cached[1]:
+                return cached[0]
 
             client = self._get_client()
-            resp = await client.post(
-                settings.igdb_oauth_url,
-                params={
-                    "client_id": settings.igdb_client_id,
-                    "client_secret": settings.igdb_client_secret,
-                    "grant_type": "client_credentials",
-                },
-            )
+            try:
+                resp = await client.post(
+                    settings.igdb_oauth_url,
+                    params={
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "grant_type": "client_credentials",
+                    },
+                )
+            except httpx.HTTPError as exc:
+                raise ValueError(f"Falha ao contatar o Twitch/IGDB: {exc}") from exc
+            if resp.status_code in (400, 401, 403):
+                raise ValueError(
+                    "O IGDB/Twitch rejeitou as credenciais. Verifique o Client ID e o Secret."
+                )
             resp.raise_for_status()
             data = resp.json()
 
             access_token: str = data["access_token"]
-            self._token = access_token
             # Refresh 60 seconds before expiry
-            self._token_expires_at = now + timedelta(seconds=data["expires_in"] - 60)
+            self._tokens[client_id] = (
+                access_token,
+                now + timedelta(seconds=data["expires_in"] - 60),
+            )
             return access_token
 
-    async def _post(self, path: str, body: str) -> list[dict]:
+    async def _post(
+        self, path: str, body: str, client_id: str, client_secret: str
+    ) -> list[dict]:
         """Make an authenticated POST request to IGDB."""
-        token = await self._ensure_token()
+        token = await self._ensure_token(client_id, client_secret)
         client = self._get_client()
 
-        resp = await client.post(
-            f"{settings.igdb_base_url}{path}",
-            content=body,
-            headers={
-                "Client-ID": settings.igdb_client_id or "",
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-                "Content-Type": "text/plain",
-            },
-        )
-        resp.raise_for_status()
+        try:
+            resp = await client.post(
+                f"{settings.igdb_base_url}{path}",
+                content=body,
+                headers={
+                    "Client-ID": client_id,
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                    "Content-Type": "text/plain",
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise ValueError(f"Falha ao contatar o IGDB: {exc}") from exc
+
+        if resp.status_code >= 400:
+            raise ValueError(f"O IGDB retornou um erro ({resp.status_code}).")
         data = resp.json()
         if not isinstance(data, list):
             raise ValueError(f"IGDB returned unexpected response: {data}")
@@ -102,7 +116,9 @@ class IgdbService:
             return None
         return datetime.fromtimestamp(unix_ts).date().isoformat()
 
-    async def search_games(self, query: str, limit: int = 20) -> list[IgdbSearchItem]:
+    async def search_games(
+        self, query: str, client_id: str, client_secret: str, limit: int = 20
+    ) -> list[IgdbSearchItem]:
         """Search IGDB for games by title."""
         # version_parent=null filters out editions/versions
         body = (
@@ -112,7 +128,7 @@ class IgdbService:
             f"limit {limit};"
         )
 
-        results = await self._post("/games", body)
+        results = await self._post("/games", body, client_id, client_secret)
 
         items: list[IgdbSearchItem] = []
         for g in results:
@@ -133,7 +149,9 @@ class IgdbService:
             )
         return items
 
-    async def get_game(self, game_id: int) -> IgdbGame:
+    async def get_game(
+        self, game_id: int, client_id: str, client_secret: str
+    ) -> IgdbGame:
         """Get full game details from IGDB."""
         body = (
             "fields id,slug,name,summary,storyline,first_release_date,"
@@ -150,7 +168,7 @@ class IgdbService:
             f"where id = {game_id};"
         )
 
-        results = await self._post("/games", body)
+        results = await self._post("/games", body, client_id, client_secret)
         if not results:
             raise ValueError(f"Game {game_id} not found in IGDB")
 

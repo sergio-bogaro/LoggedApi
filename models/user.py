@@ -36,6 +36,12 @@ class User(Base):
     track_books: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     track_music: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # Chaves de integração por usuário (write-only; nunca expostas nas respostas).
+    # Quando ausentes, a API usa o fallback de instância definido no .env.
+    tmdb_api_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    igdb_client_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    igdb_client_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # Relacionamentos
     media: Mapped[list["Media"]] = relationship(
         "Media", back_populates="user", cascade="all, delete-orphan", lazy="selectin"

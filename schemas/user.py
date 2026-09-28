@@ -47,6 +47,10 @@ class UserUpdate(BaseModel):
     track_games: bool | None = None
     track_books: bool | None = None
     track_music: bool | None = None
+    # Chaves de integração por usuário (write-only; campos enviados vazios limpam a chave)
+    tmdb_api_key: str | None = None
+    igdb_client_id: str | None = None
+    igdb_client_secret: str | None = None
 
 
 class UserResponse(UserBase):
