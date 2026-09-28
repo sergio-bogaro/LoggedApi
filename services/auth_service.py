@@ -4,7 +4,6 @@ from fastapi import HTTPException, status
 from models.user import User
 from models.media_list_item import MediaListItem
 from schemas.user import UserCreate, UserLogin, UserUpdate
-from services.custom_view_service import CustomViewService
 
 
 class AuthService:
@@ -28,10 +27,7 @@ class AuthService:
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
-        
-        # Cria visões padrão para o novo usuário
-        CustomViewService.create_default_views(db, new_user.id)
-        
+
         return new_user
 
     @staticmethod

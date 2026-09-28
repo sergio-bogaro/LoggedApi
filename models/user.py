@@ -10,7 +10,6 @@ from models.enums import MediaTypeEnum
 if TYPE_CHECKING:
     from models.media import Media
     from models.media_log import MediaLog
-    from models.custom_view import CustomView
 
 
 class User(Base):
@@ -49,10 +48,6 @@ class User(Base):
     
     logs: Mapped[list["MediaLog"]] = relationship(
         "MediaLog", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
-    )
-    
-    custom_views: Mapped[list["CustomView"]] = relationship(
-        "CustomView", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
     )
 
     def __repr__(self) -> str:

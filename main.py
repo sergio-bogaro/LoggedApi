@@ -6,13 +6,12 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from database import Base, engine, ensure_columns
+from database import Base, engine, ensure_columns, drop_obsolete_tables
 from routers.auth import router as auth_router
 from routers.media import router as media_router
 from routers.media_log import router as media_log_router
 from routers.favorites import router as favorites_router
 from routers.backlog import router as backlog_router
-from routers.custom_views import router as custom_views_router
 from routers.igdb import router as igdb_router
 from routers.tmdb import router as tmdb_router
 
@@ -22,6 +21,7 @@ async def lifespan(app: FastAPI):
     # Startup: cria as tabelas no banco e aplica colunas novas em tabelas existentes
     Base.metadata.create_all(bind=engine)
     ensure_columns()
+    drop_obsolete_tables()
     print("Database tables created")
     print(f"Upload directory: {settings.upload_path}")
     yield
@@ -60,7 +60,6 @@ app.include_router(media_router)
 app.include_router(media_log_router)
 app.include_router(favorites_router)
 app.include_router(backlog_router)
-app.include_router(custom_views_router)
 app.include_router(igdb_router)
 app.include_router(tmdb_router)
 

@@ -56,6 +56,26 @@ def ensure_columns() -> None:
                     print(f"Migration: added column {table}.{name}")
 
 
+# Tabelas de funcionalidades descontinuadas. São derrubadas no startup de forma
+# idempotente para não ficarem órfãs em bancos já existentes.
+_OBSOLETE_TABLES: list[str] = ["custom_views"]
+
+
+def drop_obsolete_tables() -> None:
+    """Remove tabelas de funcionalidades descontinuadas (idempotente)."""
+    if not _OBSOLETE_TABLES:
+        return
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    with engine.begin() as conn:
+        for table in _OBSOLETE_TABLES:
+            if table in existing_tables:
+                conn.execute(text(f'DROP TABLE IF EXISTS "{table}"'))
+                print(f"Migration: dropped obsolete table {table}")
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
