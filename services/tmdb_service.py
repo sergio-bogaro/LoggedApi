@@ -48,7 +48,7 @@ class TmdbService:
         return await self._get(
             f"/movie/{movie_id}",
             api_key,
-            {"append_to_response": "credits,videos,images,recommendations"},
+            {"append_to_response": "credits,videos,images,recommendations,similar"},
         )
 
     async def search_tv(self, query: str, api_key: str) -> dict:
@@ -60,7 +60,7 @@ class TmdbService:
             api_key,
             {
                 "append_to_response": (
-                    "credits,aggregate_credits,videos,images,recommendations"
+                    "credits,aggregate_credits,videos,images,recommendations,similar"
                 )
             },
         )
