@@ -32,6 +32,7 @@ class UserSettings(BaseModel):
     track_games: bool = True
     track_books: bool = True
     track_music: bool = True
+    track_series: bool = True
 
 
 class UserUpdate(BaseModel):
@@ -47,6 +48,7 @@ class UserUpdate(BaseModel):
     track_games: bool | None = None
     track_books: bool | None = None
     track_music: bool | None = None
+    track_series: bool | None = None
     # Chaves de integração por usuário (write-only; campos enviados vazios limpam a chave)
     tmdb_api_key: str | None = None
     igdb_client_id: str | None = None
@@ -69,6 +71,7 @@ class UserResponse(UserBase):
     track_games: bool
     track_books: bool
     track_music: bool
+    track_series: bool
 
 
 class LoginResponse(BaseModel):

@@ -30,6 +30,7 @@ class Base(DeclarativeBase):
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "users": {
         "track_music": "BOOLEAN NOT NULL DEFAULT 1",
+        "track_series": "BOOLEAN NOT NULL DEFAULT 1",
         "tmdb_api_key": "TEXT",
         "igdb_client_id": "TEXT",
         "igdb_client_secret": "TEXT",

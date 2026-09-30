@@ -34,6 +34,7 @@ class User(Base):
     track_games: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     track_books: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     track_music: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    track_series: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # Chaves de integração por usuário (write-only; nunca expostas nas respostas).
     # Quando ausentes, a API usa o fallback de instância definido no .env.

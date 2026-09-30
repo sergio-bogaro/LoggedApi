@@ -32,6 +32,10 @@ class TmdbService:
             raise ValueError(
                 "O TMDB rejeitou a chave de API (401). Verifique a chave configurada."
             )
+        if resp.status_code == 429:
+            raise ValueError(
+                "O TMDB limitou a taxa de requisições (429). Tente novamente em instantes."
+            )
         if resp.status_code >= 400:
             raise ValueError(f"O TMDB retornou um erro ({resp.status_code}).")
 
@@ -45,6 +49,20 @@ class TmdbService:
             f"/movie/{movie_id}",
             api_key,
             {"append_to_response": "credits,videos,images,recommendations"},
+        )
+
+    async def search_tv(self, query: str, api_key: str) -> dict:
+        return await self._get("/search/tv", api_key, {"query": query, "page": 1})
+
+    async def get_tv(self, tv_id: int, api_key: str) -> dict:
+        return await self._get(
+            f"/tv/{tv_id}",
+            api_key,
+            {
+                "append_to_response": (
+                    "credits,aggregate_credits,videos,images,recommendations"
+                )
+            },
         )
 
 

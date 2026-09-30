@@ -36,3 +36,25 @@ async def get_movie(
     if not api_key:
         raise ValueError("Nenhuma chave do TMDB configurada.")
     return await service.get_movie(movie_id, api_key)
+
+
+@router.get("/search/tv")
+async def search_series(
+    query: str, user_id: int | None = None, db: Session = Depends(get_db)
+) -> dict:
+    """Busca séries no TMDB (proxy; a chave nunca chega ao navegador)."""
+    api_key = resolve_tmdb_key(db, user_id)
+    if not api_key:
+        raise ValueError("Nenhuma chave do TMDB configurada.")
+    return await service.search_tv(query, api_key)
+
+
+@router.get("/tv/{tv_id}")
+async def get_tv(
+    tv_id: int, user_id: int | None = None, db: Session = Depends(get_db)
+) -> dict:
+    """Detalhes de uma série no TMDB (proxy)."""
+    api_key = resolve_tmdb_key(db, user_id)
+    if not api_key:
+        raise ValueError("Nenhuma chave do TMDB configurada.")
+    return await service.get_tv(tv_id, api_key)
