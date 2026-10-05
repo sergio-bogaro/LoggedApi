@@ -13,6 +13,7 @@ from routers.media_log import router as media_log_router
 from routers.favorites import router as favorites_router
 from routers.backlog import router as backlog_router
 from routers.igdb import router as igdb_router
+from routers.import_router import router as import_router
 from routers.tmdb import router as tmdb_router
 
 
@@ -61,6 +62,7 @@ app.include_router(media_log_router)
 app.include_router(favorites_router)
 app.include_router(backlog_router)
 app.include_router(igdb_router)
+app.include_router(import_router)
 app.include_router(tmdb_router)
 
 

@@ -41,8 +41,13 @@ class TmdbService:
 
         return resp.json()
 
-    async def search_movies(self, query: str, api_key: str) -> dict:
-        return await self._get("/search/movie", api_key, {"query": query, "page": 1})
+    async def search_movies(
+        self, query: str, api_key: str, year: int | None = None
+    ) -> dict:
+        extra: dict[str, object] = {"query": query, "page": 1}
+        if year:
+            extra["year"] = year
+        return await self._get("/search/movie", api_key, extra)
 
     async def get_movie(self, movie_id: int, api_key: str) -> dict:
         return await self._get(
@@ -51,8 +56,13 @@ class TmdbService:
             {"append_to_response": "credits,videos,images,recommendations,similar"},
         )
 
-    async def search_tv(self, query: str, api_key: str) -> dict:
-        return await self._get("/search/tv", api_key, {"query": query, "page": 1})
+    async def search_tv(
+        self, query: str, api_key: str, year: int | None = None
+    ) -> dict:
+        extra: dict[str, object] = {"query": query, "page": 1}
+        if year:
+            extra["first_air_date_year"] = year
+        return await self._get("/search/tv", api_key, extra)
 
     async def get_tv(self, tv_id: int, api_key: str) -> dict:
         return await self._get(
