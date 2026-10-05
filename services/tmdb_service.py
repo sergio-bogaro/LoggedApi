@@ -75,5 +75,10 @@ class TmdbService:
             },
         )
 
+    async def find_by_imdb(self, imdb_id: str, api_key: str) -> dict:
+        return await self._get(
+            f"/find/{imdb_id}", api_key, {"external_source": "imdb_id"}
+        )
+
 
 service = TmdbService()

@@ -245,6 +245,16 @@ class ImportMatcher:
             if movie:
                 return [self._tmdb_candidate(movie, media_type, 1.0, title, year)]
 
+        if refs.get("imdbId"):
+            try:
+                found = await tmdb_service.find_by_imdb(refs["imdbId"], api_key)
+            except ValueError:
+                found = None
+            results_key = "tv_results" if is_tv else "movie_results"
+            found_list = (found or {}).get(results_key) or []
+            if found_list:
+                return [self._tmdb_candidate(found_list[0], media_type, 1.0, title, year)]
+
         results = await self._run_tmdb_search(search_fn, title, api_key, year)
         if not results and year:
             results = await self._run_tmdb_search(search_fn, title, api_key, None)

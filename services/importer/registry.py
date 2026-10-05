@@ -2,12 +2,14 @@ from services.importer.providers.anilist import AniListProvider
 from services.importer.providers.goodreads import GoodreadsProvider
 from services.importer.providers.letterboxd import LetterboxdProvider
 from services.importer.providers.mal import MalProvider
+from services.importer.providers.trakt import TraktProvider
 
 _PROVIDERS: list = [
     LetterboxdProvider(),
     AniListProvider(),
     MalProvider(),
     GoodreadsProvider(),
+    TraktProvider(),
 ]
 _PROVIDER_MAP: dict[str, object] = {provider.id: provider for provider in _PROVIDERS}
 
