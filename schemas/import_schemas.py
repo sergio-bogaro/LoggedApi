@@ -52,6 +52,7 @@ class ImportEntry(_CamelModel):
     media_type: MediaTypeEnum
     title: str
     year: int | None = None
+    overview: str | None = None
     source: str
     external_refs: dict[str, str] = {}
     status: MediaStatusEnum | None = None
@@ -85,6 +86,7 @@ class ImportMatchRequestItem(_CamelModel):
     key: str
     title: str
     year: int | None = None
+    overview: str | None = None
     media_type: MediaTypeEnum
     external_refs: dict[str, str] = {}
 

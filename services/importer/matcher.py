@@ -23,6 +23,7 @@ from schemas.import_schemas import (
     ImportMatchResult,
 )
 from services.anilist_service import service as anilist_service
+from services.openlibrary_service import service as openlibrary_service, work_id_from_key
 from services.tmdb_service import service as tmdb_service
 
 _TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
@@ -52,6 +53,22 @@ def _fuzzy_date(value: dict | None) -> date | None:
         return date(int(value["year"]), int(value.get("month") or 1), int(value.get("day") or 1))
     except (TypeError, ValueError):
         return None
+
+
+def _extract_year(value: object) -> int | None:
+    if not value:
+        return None
+    match = re.search(r"\d{4}", str(value))
+    return int(match.group()) if match else None
+
+
+def _work_description(work: dict) -> str | None:
+    description = work.get("description")
+    if isinstance(description, str):
+        return description
+    if isinstance(description, dict):
+        return description.get("value")
+    return None
 
 
 def _score_match(wanted_title: str, wanted_year: int | None, title: str, original_title: str, cand_year: int | None, popularity: float = 0.0) -> float:
@@ -149,6 +166,8 @@ class ImportMatcher:
     ) -> list[ImportCandidate]:
         if media_type in _ANIME_TYPES:
             return await self._anilist_search(media_type, query)
+        if media_type == MediaTypeEnum.BOOK:
+            return await self._openlibrary_search(query, None)
         if media_type in (MediaTypeEnum.MOVIES, MediaTypeEnum.SERIES):
             if not tmdb_api_key:
                 raise ValueError("Nenhuma chave do TMDB configurada.")
@@ -165,6 +184,8 @@ class ImportMatcher:
     ) -> list[ImportCandidate]:
         if item.media_type in _ANIME_TYPES:
             return await self._anilist_candidates(item, cache)
+        if item.media_type == MediaTypeEnum.BOOK:
+            return await self._openlibrary_candidates(item)
         if item.media_type in (MediaTypeEnum.MOVIES, MediaTypeEnum.SERIES):
             if not tmdb_api_key:
                 return []
@@ -239,6 +260,106 @@ class ImportMatcher:
         except ValueError:
             return []
         return list(data.get("results") or [])
+
+    # ── OpenLibrary (livros) ──
+
+    async def _openlibrary_candidates(
+        self, item: ImportMatchRequestItem
+    ) -> list[ImportCandidate]:
+        refs = item.external_refs or {}
+        isbn = refs.get("isbn13") or refs.get("isbn10")
+        if isbn:
+            candidate = await self._openlibrary_by_isbn(isbn, item.overview)
+            if candidate:
+                return [candidate]
+        return await self._openlibrary_search(item.title, item.year, item.overview)
+
+    async def _openlibrary_by_isbn(
+        self, isbn: str, fallback_overview: str | None
+    ) -> ImportCandidate | None:
+        try:
+            edition = await openlibrary_service.get_by_isbn(isbn)
+        except ValueError:
+            return None
+        if not edition:
+            return None
+
+        work_key = None
+        for work in edition.get("works") or []:
+            work_key = work.get("key")
+            if work_key:
+                break
+        if not work_key:
+            return None
+
+        try:
+            work = await openlibrary_service.get_work(work_key)
+        except ValueError:
+            return None
+        if not work:
+            return None
+        return self._openlibrary_candidate(work, work_key, 1.0, fallback_overview)
+
+    async def _openlibrary_search(
+        self, query: str, year: int | None, fallback_overview: str | None = None
+    ) -> list[ImportCandidate]:
+        try:
+            docs = await openlibrary_service.search(query)
+        except ValueError:
+            return []
+        candidates = [
+            self._openlibrary_search_candidate(doc, query, year, fallback_overview)
+            for doc in docs
+        ]
+        candidates.sort(key=lambda candidate: candidate.score, reverse=True)
+        return candidates[:5]
+
+    def _openlibrary_candidate(
+        self,
+        work: dict,
+        work_key: str,
+        score: float,
+        fallback_overview: str | None,
+    ) -> ImportCandidate:
+        covers = work.get("covers") or []
+        cover_url = (
+            f"https://covers.openlibrary.org/b/id/{covers[0]}-M.jpg" if covers else None
+        )
+        return ImportCandidate(
+            provider="openlibrary",
+            external_id=work_id_from_key(work_key),
+            media_type=MediaTypeEnum.BOOK,
+            title=work.get("title") or "",
+            year=_extract_year(work.get("first_publish_date") or work.get("publish_date")),
+            cover_url=cover_url,
+            overview=_work_description(work) or fallback_overview,
+            release_date=None,
+            score=score,
+        )
+
+    def _openlibrary_search_candidate(
+        self,
+        doc: dict,
+        wanted_title: str,
+        wanted_year: int | None,
+        fallback_overview: str | None,
+    ) -> ImportCandidate:
+        cover_i = doc.get("cover_i")
+        title = doc.get("title") or ""
+        year = doc.get("first_publish_year")
+        author = doc.get("author_name") or []
+        overview = fallback_overview or (f"Author: {author[0]}" if author else None)
+        return ImportCandidate(
+            provider="openlibrary",
+            external_id=work_id_from_key(doc.get("key")),
+            media_type=MediaTypeEnum.BOOK,
+            title=title,
+            year=year,
+            cover_url=f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg" if cover_i else None,
+            overview=overview,
+            release_date=None,
+            score=_score_match(wanted_title, wanted_year, title, "", year),
+        )
 
     # ── conversão para candidatos ──
 
