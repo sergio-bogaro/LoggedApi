@@ -65,6 +65,8 @@ class _Acc:
     year: int | None = None
     tmdb: str | None = None
     imdb: str | None = None
+    slug: str | None = None
+    trakt: str | None = None
     watched_dates: list[date] = field(default_factory=list)
     rating: float | None = None
     watchlist_date: date | None = None
@@ -147,14 +149,26 @@ class TraktProvider(ImportProvider):
         ids = obj.get("ids") or {}
         tmdb = str(ids["tmdb"]) if ids.get("tmdb") else None
         imdb = ids.get("imdb") or None
-        key = tmdb or imdb or ids.get("slug") or (str(ids["trakt"]) if ids.get("trakt") else None)
+        slug = ids.get("slug") or None
+        trakt = str(ids["trakt"]) if ids.get("trakt") else None
+        key = tmdb or imdb or slug or trakt
         if not key:
             return
 
         acc = target.get(str(key))
         if acc is None:
-            acc = _Acc(title=obj.get("title") or "", year=obj.get("year"), tmdb=tmdb, imdb=imdb)
+            acc = _Acc(
+                title=obj.get("title") or "",
+                year=obj.get("year"),
+                tmdb=tmdb,
+                imdb=imdb,
+                slug=slug,
+                trakt=trakt,
+            )
             target[str(key)] = acc
+        else:
+            acc.slug = acc.slug or slug
+            acc.trakt = acc.trakt or trakt
 
         if field_name == "watched":
             day = _to_date(entry.get("last_watched_at"))
@@ -201,6 +215,10 @@ class TraktProvider(ImportProvider):
                 )
 
         refs: dict[str, str] = {}
+        if acc.slug:
+            refs["traktSlug"] = acc.slug
+        if acc.trakt:
+            refs["traktId"] = acc.trakt
         if acc.tmdb:
             refs["tmdbId"] = acc.tmdb
         if acc.imdb:

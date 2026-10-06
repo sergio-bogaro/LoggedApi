@@ -300,7 +300,7 @@ class LetterboxdProvider(ImportProvider):
             title=acc.name,
             year=acc.year,
             source="letterboxd",
-            external_refs={},
+            external_refs={"letterboxdUri": acc.uri} if acc.uri else {},
             status=MediaStatusEnum.FINISHED if logs else None,
             rating=rating,
             review=review,
