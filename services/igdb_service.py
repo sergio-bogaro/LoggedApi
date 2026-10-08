@@ -271,3 +271,6 @@ class IgdbService:
             videos=videos,
             websites=websites,
         )
+
+
+service = IgdbService()

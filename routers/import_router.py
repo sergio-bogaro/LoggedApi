@@ -13,7 +13,7 @@ from schemas.import_schemas import (
     ImportProviderInfo,
     ImportSearchRequest,
 )
-from services.credentials_service import resolve_tmdb_key
+from services.credentials_service import resolve_igdb_credentials, resolve_tmdb_key
 from services.importer.commit import committer
 from services.importer.matcher import matcher
 from services.importer.registry import get_provider, list_providers
@@ -48,9 +48,10 @@ async def parse_provider(
 
 @router.post("/match", response_model=ImportMatchResponse)
 async def match_import(data: ImportMatchRequest, db: Session = Depends(get_db)):
-    """Casa um lote de itens com o provedor de metadata (TMDB/AniList)."""
+    """Casa um lote de itens com o provedor de metadata (TMDB/AniList/OpenLibrary/IGDB)."""
     tmdb_key = resolve_tmdb_key(db, data.user_id)
-    return await matcher.match(db, data, tmdb_key)
+    igdb_credentials = resolve_igdb_credentials(db, data.user_id)
+    return await matcher.match(db, data, tmdb_key, igdb_credentials)
 
 
 @router.post("/search", response_model=list[ImportCandidate])
@@ -59,7 +60,10 @@ async def search_import(
 ) -> list[ImportCandidate]:
     """Busca manual de candidatos para corrigir um match."""
     tmdb_key = resolve_tmdb_key(db, data.user_id) if data.user_id is not None else None
-    return await matcher.search(data.media_type, data.query, tmdb_key)
+    igdb_credentials = (
+        resolve_igdb_credentials(db, data.user_id) if data.user_id is not None else (None, None)
+    )
+    return await matcher.search(data.media_type, data.query, tmdb_key, igdb_credentials)
 
 
 @router.post("/commit", response_model=ImportCommitResponse)

@@ -23,6 +23,7 @@ from schemas.import_schemas import (
     ImportMatchResult,
 )
 from services.anilist_service import service as anilist_service
+from services.igdb_service import service as igdb_service
 from services.openlibrary_service import service as openlibrary_service, work_id_from_key
 from services.tmdb_service import service as tmdb_service
 
@@ -30,6 +31,28 @@ _TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 _MATCH_CONCURRENCY = 6
 _MATCH_THRESHOLD = 0.5
 _ANIME_TYPES = {MediaTypeEnum.ANIME, MediaTypeEnum.MANGA}
+_IGDB_MIN_INTERVAL = 0.27  # IGDB permite ~4 requisições/segundo
+
+
+class _RateLimiter:
+    """Espaça as chamadas para respeitar o limite do IGDB (4 req/s)."""
+
+    def __init__(self, min_interval: float) -> None:
+        self._interval = min_interval
+        self._next = 0.0
+
+    async def wait(self) -> None:
+        # Reserva o slot de forma síncrona (sem await) e só então dorme; assim
+        # chamadas concorrentes pegam horários distintos sem lock de event loop.
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        slot = max(now, self._next)
+        self._next = slot + self._interval
+        if slot > now:
+            await asyncio.sleep(slot - now)
+
+
+_IGDB_LIMITER = _RateLimiter(_IGDB_MIN_INTERVAL)
 
 
 def _normalize(text: str) -> str:
@@ -95,7 +118,11 @@ def _score_match(wanted_title: str, wanted_year: int | None, title: str, origina
 
 class ImportMatcher:
     async def match(
-        self, db: Session, data: ImportMatchRequest, tmdb_api_key: str | None
+        self,
+        db: Session,
+        data: ImportMatchRequest,
+        tmdb_api_key: str | None,
+        igdb_credentials: tuple[str | None, str | None] = (None, None),
     ) -> ImportMatchResponse:
         items = data.items[:2000]
         cache = await self._prefetch_anilist(items)
@@ -104,7 +131,7 @@ class ImportMatcher:
         async def resolve(item: ImportMatchRequestItem):
             async with semaphore:
                 try:
-                    return item, await self._candidates(item, tmdb_api_key, cache)
+                    return item, await self._candidates(item, tmdb_api_key, igdb_credentials, cache)
                 except Exception:  # noqa: BLE001 — uma falha vira "não encontrado"
                     return item, []
 
@@ -162,12 +189,18 @@ class ImportMatcher:
             return []
 
     async def search(
-        self, media_type: MediaTypeEnum, query: str, tmdb_api_key: str | None
+        self,
+        media_type: MediaTypeEnum,
+        query: str,
+        tmdb_api_key: str | None,
+        igdb_credentials: tuple[str | None, str | None] = (None, None),
     ) -> list[ImportCandidate]:
         if media_type in _ANIME_TYPES:
             return await self._anilist_search(media_type, query)
         if media_type == MediaTypeEnum.BOOK:
             return await self._openlibrary_search(query, None)
+        if media_type == MediaTypeEnum.GAME:
+            return await self._igdb_search(query, igdb_credentials)
         if media_type in (MediaTypeEnum.MOVIES, MediaTypeEnum.SERIES):
             if not tmdb_api_key:
                 raise ValueError("Nenhuma chave do TMDB configurada.")
@@ -180,12 +213,15 @@ class ImportMatcher:
         self,
         item: ImportMatchRequestItem,
         tmdb_api_key: str | None,
+        igdb_credentials: tuple[str | None, str | None],
         cache: dict[str, ImportCandidate],
     ) -> list[ImportCandidate]:
         if item.media_type in _ANIME_TYPES:
             return await self._anilist_candidates(item, cache)
         if item.media_type == MediaTypeEnum.BOOK:
             return await self._openlibrary_candidates(item)
+        if item.media_type == MediaTypeEnum.GAME:
+            return await self._igdb_candidates(item, igdb_credentials)
         if item.media_type in (MediaTypeEnum.MOVIES, MediaTypeEnum.SERIES):
             if not tmdb_api_key:
                 return []
@@ -369,6 +405,78 @@ class ImportMatcher:
             overview=overview,
             release_date=None,
             score=_score_match(wanted_title, wanted_year, title, "", year),
+        )
+
+    # ── IGDB (jogos) ──
+
+    async def _igdb_candidates(
+        self, item: ImportMatchRequestItem, credentials: tuple[str | None, str | None]
+    ) -> list[ImportCandidate]:
+        client_id, client_secret = credentials
+        if not client_id or not client_secret:
+            return []
+
+        refs = item.external_refs or {}
+        if refs.get("igdbId"):
+            try:
+                game = await igdb_service.get_game(int(refs["igdbId"]), client_id, client_secret)
+            except ValueError:
+                game = None
+            if game:
+                return [self._igdb_detail_candidate(game)]
+
+        return await self._igdb_search(item.title, credentials, item.year)
+
+    async def _igdb_search(
+        self,
+        query: str,
+        credentials: tuple[str | None, str | None],
+        year: int | None = None,
+    ) -> list[ImportCandidate]:
+        client_id, client_secret = credentials
+        if not client_id or not client_secret:
+            return []
+
+        await _IGDB_LIMITER.wait()
+        try:
+            results = await igdb_service.search_games(query, client_id, client_secret)
+        except ValueError:
+            return []
+
+        candidates = [self._igdb_search_candidate(game, query, year) for game in results]
+        candidates.sort(key=lambda candidate: candidate.score, reverse=True)
+        return candidates[:5]
+
+    @staticmethod
+    def _igdb_search_candidate(
+        game, wanted_title: str, wanted_year: int | None
+    ) -> ImportCandidate:
+        year = _extract_year(game.first_release_date)
+        return ImportCandidate(
+            provider="igdb",
+            external_id=str(game.id),
+            media_type=MediaTypeEnum.GAME,
+            title=game.name,
+            year=year,
+            cover_url=game.cover_url or None,
+            overview=game.summary or None,
+            release_date=_to_date(game.first_release_date),
+            score=_score_match(wanted_title, wanted_year, game.name, "", year),
+        )
+
+    @staticmethod
+    def _igdb_detail_candidate(game) -> ImportCandidate:
+        year = _extract_year(game.first_release_date)
+        return ImportCandidate(
+            provider="igdb",
+            external_id=str(game.id),
+            media_type=MediaTypeEnum.GAME,
+            title=game.name,
+            year=year,
+            cover_url=game.cover_url or None,
+            overview=game.summary or None,
+            release_date=_to_date(game.first_release_date),
+            score=1.0,
         )
 
     # ── conversão para candidatos ──
