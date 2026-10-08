@@ -111,6 +111,7 @@ class GrouveeProvider(ImportProvider):
         rating = _to_rating(row[4])
         review = (row[5] or "").strip() or None
         year = _extract_year(row[12])
+        url = (row[13] or "").strip() or None
 
         status: MediaStatusEnum | None = None
         in_backlog = False
@@ -153,7 +154,7 @@ class GrouveeProvider(ImportProvider):
             title=name,
             year=year,
             source="grouvee",
-            external_refs={},
+            external_refs={"grouveeUrl": url} if url else {},
             status=status,
             rating=rating,
             review=review,
