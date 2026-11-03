@@ -1,5 +1,5 @@
-import shutil
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -14,6 +14,17 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 class ImageStorageService:
     def __init__(self) -> None:
         self.upload_dir = settings.upload_path
+
+    def _safe_path(self, filename: str) -> Path:
+        """Impede que um valor vindo do banco/API escape da pasta de uploads."""
+        if not filename or Path(filename).name != filename:
+            raise ValueError("Nome de arquivo de imagem inválido.")
+
+        base = self.upload_dir.resolve()
+        filepath = (base / filename).resolve()
+        if filepath.parent != base:
+            raise ValueError("Nome de arquivo de imagem inválido.")
+        return filepath
 
     async def store(self, file: UploadFile) -> str:
         """Salva uma imagem no disco e retorna o nome do arquivo."""
@@ -38,7 +49,7 @@ class ImageStorageService:
 
     def delete(self, filename: str) -> bool:
         """Remove uma imagem do disco."""
-        filepath = self.upload_dir / filename
+        filepath = self._safe_path(filename)
         if filepath.exists():
             filepath.unlink()
             return True
@@ -46,14 +57,21 @@ class ImageStorageService:
 
     def get_path(self, filename: str) -> Path | None:
         """Retorna o caminho completo de uma imagem, se existir."""
-        filepath = self.upload_dir / filename
+        filepath = self._safe_path(filename)
         return filepath if filepath.exists() else None
 
     async def store_from_url(self, url: str) -> str:
         """Baixa uma imagem de uma URL e salva no disco, retornando o nome do arquivo."""
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            res = await client.get(url)
-            res.raise_for_status()
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError("Informe uma URL http(s) válida para a imagem.")
+
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                res = await client.get(url)
+                res.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ValueError(f"Falha ao baixar a imagem: {exc}") from exc
 
         content = res.content
         if len(content) > MAX_FILE_SIZE:

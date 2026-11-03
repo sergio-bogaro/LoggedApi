@@ -2,7 +2,7 @@ import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, noload
 
 from models.media import Media
 from models.media_log import MediaLog
@@ -69,14 +69,16 @@ class MediaLogService:
 
     def find_by_media(self, db: Session, media_id: int, user_id: int) -> list[MediaLogResponse]:
         """Lista todos os logs de uma mídia específica."""
-        media = db.get(Media, media_id)
-        if not media or media.user_id != user_id:
+        owner_id = db.execute(
+            select(Media.user_id).where(Media.id == media_id)
+        ).scalar_one_or_none()
+        if owner_id is None or owner_id != user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
         query = (
             select(MediaLog)
             .where(MediaLog.media_id == media_id)
-            .order_by(MediaLog.date.desc())
+            .order_by(MediaLog.date.desc(), MediaLog.id.desc())
         )
         results = db.execute(query).scalars().all()
 
@@ -92,8 +94,12 @@ class MediaLogService:
 
     def create(self, db: Session, data: MediaLogCreate) -> MediaLogResponse:
         """Cria um novo log para uma mídia."""
-        media = db.get(Media, data.media_id)
-        if not media:
+        media = db.execute(
+            select(Media)
+            .where(Media.id == data.media_id)
+            .options(noload(Media.logs), noload(Media.tags))
+        ).scalar_one_or_none()
+        if not media or media.user_id != data.user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
         log = MediaLog(**data.model_dump())

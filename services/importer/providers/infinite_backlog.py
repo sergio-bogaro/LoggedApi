@@ -20,6 +20,8 @@ from schemas.import_schemas import (
 from services.importer.providers.base import ImportProvider
 from services.importer.providers.games_common import is_backlog_status, map_game_status
 
+_MAX_ROWS = 50_000
+
 _TITLE_KEYS = ["title", "name", "game", "game title"]
 _RATING_KEYS = ["rating", "score", "my rating", "your rating"]
 _STATUS_KEYS = ["status", "play status", "state", "shelf", "list"]
@@ -95,10 +97,13 @@ class InfiniteBacklogProvider(ImportProvider):
         ]
         if not rows:
             raise ValueError("CSV do Infinite Backlog vazio.")
+        if len(rows) > _MAX_ROWS:
+            raise ValueError("CSV do Infinite Backlog tem linhas demais.")
 
         ratings = [_to_float(_first(row, _RATING_KEYS)) for row in rows]
         ratings = [rating for rating in ratings if rating is not None]
-        scale = 10 if ratings and max(ratings) > 5 else 5
+        max_rating = max(ratings) if ratings else 0
+        scale = 100 if max_rating > 10 else 10 if max_rating > 5 else 5
 
         entries = []
         for row in rows:
@@ -133,7 +138,13 @@ class InfiniteBacklogProvider(ImportProvider):
         raw_rating = _to_float(_first(row, _RATING_KEYS))
         rating = None
         if raw_rating and raw_rating > 0:
-            rating = round(raw_rating, 1) if scale == 10 else round(raw_rating * 2, 1)
+            if scale == 100:
+                rating = round(raw_rating / 10, 1)
+            elif scale == 10:
+                rating = round(raw_rating, 1)
+            else:
+                rating = round(raw_rating * 2, 1)
+            rating = max(0.0, min(10.0, rating))
 
         review = _first(row, _REVIEW_KEYS) or None
         year = _extract_year(_first(row, _YEAR_KEYS))

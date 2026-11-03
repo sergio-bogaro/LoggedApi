@@ -1,7 +1,22 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
+
+_NON_NULLABLE_UPDATE_FIELDS = (
+    "username",
+    "password",
+    "rating_mode",
+    "view_mode",
+    "track_movies",
+    "track_anime",
+    "track_manga",
+    "track_games",
+    "track_books",
+    "track_music",
+    "track_series",
+)
 
 
 class UserBase(BaseModel):
@@ -38,10 +53,10 @@ class UserSettings(BaseModel):
 class UserUpdate(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
-    username: str | None = None
-    password: str | None = None
-    rating_mode: str | None = None
-    view_mode: str | None = None
+    username: str | None = Field(None, min_length=3, max_length=100)
+    password: str | None = Field(None, min_length=3, max_length=255)
+    rating_mode: Literal["numeric", "stars5", "stars10"] | None = None
+    view_mode: Literal["list", "grid"] | None = None
     track_movies: bool | None = None
     track_anime: bool | None = None
     track_manga: bool | None = None
@@ -53,6 +68,18 @@ class UserUpdate(BaseModel):
     tmdb_api_key: str | None = None
     igdb_client_id: str | None = None
     igdb_client_secret: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_null_non_nullable_fields(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+
+        for field in _NON_NULLABLE_UPDATE_FIELDS:
+            for key in (field, to_camel(field)):
+                if key in data and data[key] is None:
+                    raise ValueError(f"O campo '{key}' não pode ser nulo.")
+        return data
 
 
 class UserResponse(UserBase):

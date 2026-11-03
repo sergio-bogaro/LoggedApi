@@ -51,6 +51,8 @@ class OpenLibraryService:
 
     async def get_work(self, key: str) -> dict | None:
         path = key if key.startswith("/") else f"/works/{key}"
+        if not path.endswith(".json"):
+            path += ".json"
         return await self._get(path)
 
 

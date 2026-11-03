@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from config import settings
@@ -10,6 +10,17 @@ engine = create_engine(
     connect_args={"check_same_thread": False},  # Necessário para SQLite
     echo=False,
 )
+
+
+if engine.url.get_backend_name() == "sqlite":
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -27,6 +38,9 @@ class Base(DeclarativeBase):
 # preservando os dados atuais.
 #
 # Formato: { "tabela": { "coluna": "DDL SQL (tipo + default/constraints)" } }
+# Nota: bancos antigos podem ter media_log.progress/progress_total. As colunas
+# foram removidas do modelo em uma versão anterior e são mantidas no banco para
+# não destruir dados históricos; o app atual não as utiliza.
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "users": {
         "track_music": "BOOLEAN NOT NULL DEFAULT 1",
@@ -83,3 +97,154 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+# ──────────────────────────────────────────────
+# Integridade e índices (idempotente)
+# ──────────────────────────────────────────────
+_REQUIRED_COLUMNS: dict[str, set[str]] = {
+    "users": {
+        "username",
+        "password",
+        "rating_mode",
+        "view_mode",
+        "track_movies",
+        "track_anime",
+        "track_manga",
+        "track_games",
+        "track_books",
+        "track_music",
+        "track_series",
+    },
+    "media": {
+        "user_id",
+        "external_id",
+        "title",
+        "type",
+        "status",
+        "rating",
+        "review",
+        "release_date",
+        "image_path",
+    },
+    "media_log": {
+        "user_id",
+        "media_id",
+        "date",
+        "status",
+        "rating",
+        "review",
+        "start_date",
+        "end_date",
+    },
+    "media_list_items": {"user_id", "media_type", "media_id", "list_type", "date_log"},
+    "tags": {"name"},
+    "media_tags": {"media_id", "tag_id"},
+}
+
+
+def validate_schema() -> None:
+    """Falha cedo em bancos muito antigos, em vez de quebrar em uma query."""
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    for table, required in _REQUIRED_COLUMNS.items():
+        if table not in existing_tables:
+            raise RuntimeError(
+                f"Tabela obrigatória ausente: {table}. "
+                "Apague/renomeie o banco e suba a aplicação novamente."
+            )
+        current = {column["name"] for column in inspector.get_columns(table)}
+        missing = required - current
+        if missing:
+            raise RuntimeError(
+                f"Banco antigo: a tabela '{table}' não tem as colunas "
+                f"{', '.join(sorted(missing))}. "
+                "Faça backup, apague/renomeie o banco e suba a aplicação novamente."
+            )
+
+
+def ensure_indexes() -> None:
+    """Cria índices únicos e consolida tags duplicadas por caixa.
+
+    Bancos antigos podem ter tags "Ação" e "ação"; antes do índice único,
+    os registros são fundidos na tag de menor id.
+    """
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    if not {"tags", "media_tags"} <= existing_tables:
+        return
+
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT id, name FROM tags ORDER BY id")).all()
+        groups: dict[str, list[int]] = {}
+        for tag_id, name in rows:
+            groups.setdefault((name or "").strip().lower(), []).append(tag_id)
+
+        for ids in groups.values():
+            if len(ids) < 2:
+                continue
+            keep = ids[0]
+            for duplicate in ids[1:]:
+                conn.execute(
+                    text(
+                        "UPDATE OR IGNORE media_tags SET tag_id = :keep "
+                        "WHERE tag_id = :duplicate"
+                    ),
+                    {"keep": keep, "duplicate": duplicate},
+                )
+                conn.execute(
+                    text("DELETE FROM media_tags WHERE tag_id = :duplicate"),
+                    {"duplicate": duplicate},
+                )
+                conn.execute(
+                    text("DELETE FROM tags WHERE id = :duplicate"),
+                    {"duplicate": duplicate},
+                )
+                print(f"Migration: merged duplicate tag {duplicate} into {keep}")
+
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_tags_name_lower "
+                "ON tags (lower(name))"
+            )
+        )
+
+    with engine.begin() as conn:
+        media_duplicates = conn.execute(
+            text(
+                "SELECT 1 FROM media GROUP BY user_id, type, external_id "
+                "HAVING count(*) > 1 LIMIT 1"
+            )
+        ).first()
+        if media_duplicates:
+            print(
+                "Warning: existem mídias duplicadas; "
+                "o índice único uq_media_user_type_external não foi criado."
+            )
+        else:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_media_user_type_external "
+                    "ON media (user_id, type, external_id)"
+                )
+            )
+
+        list_duplicates = conn.execute(
+            text(
+                "SELECT 1 FROM media_list_items GROUP BY user_id, media_id, list_type "
+                "HAVING count(*) > 1 LIMIT 1"
+            )
+        ).first()
+        if list_duplicates:
+            print(
+                "Warning: existem itens duplicados em listas; "
+                "o índice único uq_media_list_user_media_type não foi criado."
+            )
+        else:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_media_list_user_media_type "
+                    "ON media_list_items (user_id, media_id, list_type)"
+                )
+            )

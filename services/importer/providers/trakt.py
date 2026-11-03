@@ -21,6 +21,9 @@ from schemas.import_schemas import (
 )
 from services.importer.providers.base import ImportProvider
 
+_MAX_ARCHIVE_ENTRIES = 2000
+_MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
+
 
 def _to_date(value: object) -> date | None:
     raw = str(value or "").strip()
@@ -92,8 +95,15 @@ class TraktProvider(ImportProvider):
         movies: dict[str, _Acc] = {}
         shows: dict[str, _Acc] = {}
         with archive:
-            for info in archive.namelist():
-                base = info.rsplit("/", 1)[-1].lower()
+            infos = archive.infolist()
+            if len(infos) > _MAX_ARCHIVE_ENTRIES:
+                raise ValueError("O ZIP do Trakt tem entradas demais.")
+            if sum(info.file_size for info in infos) > _MAX_UNCOMPRESSED_BYTES:
+                raise ValueError("O ZIP do Trakt é grande demais.")
+
+            total = 0
+            for info in infos:
+                base = info.filename.rsplit("/", 1)[-1].lower()
                 if not base.endswith(".json"):
                     continue
                 if "movie" in base:
@@ -113,7 +123,11 @@ class TraktProvider(ImportProvider):
                     continue
 
                 try:
-                    data = json.loads(archive.read(info).decode("utf-8-sig", errors="replace"))
+                    content = archive.read(info)
+                    total += len(content)
+                    if total > _MAX_UNCOMPRESSED_BYTES:
+                        raise ValueError("O ZIP do Trakt é grande demais.")
+                    data = json.loads(content.decode("utf-8-sig", errors="replace"))
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
 

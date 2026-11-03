@@ -1,8 +1,9 @@
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 from models.enums import MediaTypeEnum
+from schemas.date_utils import parse_optional_datetime
 
 
 class MediaListItemMedia(BaseModel):
@@ -36,6 +37,11 @@ class MediaListItemCreate(BaseModel):
         alias_generator=to_camel,
         populate_by_name=True,
     )
+
+    @field_validator("release_date", mode="before")
+    @classmethod
+    def _normalize_release_date(cls, value: object) -> datetime | None:
+        return parse_optional_datetime(value)
 
 
 class MediaListItemResponse(BaseModel):

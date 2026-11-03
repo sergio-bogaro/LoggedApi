@@ -4,9 +4,17 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import IntegrityError
 
 from config import settings
-from database import Base, engine, ensure_columns, drop_obsolete_tables
+from database import (
+    Base,
+    engine,
+    ensure_columns,
+    ensure_indexes,
+    drop_obsolete_tables,
+    validate_schema,
+)
 from routers.auth import router as auth_router
 from routers.media import router as media_router
 from routers.media_log import router as media_log_router
@@ -22,6 +30,8 @@ async def lifespan(app: FastAPI):
     # Startup: cria as tabelas no banco e aplica colunas novas em tabelas existentes
     Base.metadata.create_all(bind=engine)
     ensure_columns()
+    validate_schema()
+    ensure_indexes()
     drop_obsolete_tables()
     print("Database tables created")
     print(f"Upload directory: {settings.upload_path}")
@@ -41,6 +51,15 @@ app = FastAPI(
 @app.exception_handler(ValueError)
 async def value_error_handler(request: Request, exc: ValueError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError):
+    # Evita 500 quando um cliente envia um valor que viola uma constraint.
+    return JSONResponse(
+        status_code=409,
+        content={"detail": "Não foi possível salvar os dados: valor duplicado ou inválido."},
+    )
 
 
 # CORS — permite o frontend React acessar a API

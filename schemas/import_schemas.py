@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from models.enums import MediaStatusEnum, MediaTypeEnum
@@ -41,7 +41,7 @@ class ImportLogEntry(_CamelModel):
     start_date: datetime | None = None
     end_date: datetime | None = None
     status: MediaStatusEnum | None = None
-    rating: float | None = None
+    rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
 
 
@@ -56,7 +56,7 @@ class ImportEntry(_CamelModel):
     source: str
     external_refs: dict[str, str] = {}
     status: MediaStatusEnum | None = None
-    rating: float | None = None
+    rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
     logs: list[ImportLogEntry] = []
     in_backlog: bool = False
@@ -115,6 +115,7 @@ class ImportMatchResult(_CamelModel):
     match: ImportCandidate | None = None
     candidates: list[ImportCandidate] = []
     existing_media_id: int | None = None
+    error: str | None = None
 
 
 class ImportMatchResponse(_CamelModel):
@@ -142,7 +143,7 @@ class ImportCommitEntry(_CamelModel):
     overview: str | None = None
     release_date: date | None = None
     status: MediaStatusEnum | None = None
-    rating: float | None = None
+    rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
     logs: list[ImportLogEntry] = []
     add_to_backlog: bool = False
