@@ -3,6 +3,7 @@ from fastapi import HTTPException, status
 
 from models.user import User
 from models.media_list_item import MediaListItem
+from models.import_job import ImportJob
 from models.suwayomi import SuwayomiAccount, SuwayomiCategoryMapping, SuwayomiMangaLink
 from schemas.user import UserCreate, UserLogin, UserUpdate
 
@@ -92,5 +93,6 @@ class AuthService:
             SuwayomiCategoryMapping.user_id == user_id
         ).delete()
         db.query(SuwayomiAccount).filter(SuwayomiAccount.user_id == user_id).delete()
+        db.query(ImportJob).filter(ImportJob.user_id == user_id).delete()
         db.delete(user)
         db.commit()

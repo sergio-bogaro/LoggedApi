@@ -24,6 +24,7 @@ from routers.igdb import router as igdb_router
 from routers.import_router import router as import_router
 from routers.suwayomi import router as suwayomi_router
 from routers.tmdb import router as tmdb_router
+from services.import_jobs.worker import worker as import_job_worker
 from services.suwayomi.scheduler import scheduler as suwayomi_scheduler
 
 
@@ -38,8 +39,10 @@ async def lifespan(app: FastAPI):
     print("Database tables created")
     print(f"Upload directory: {settings.upload_path}")
     await suwayomi_scheduler.start()
+    await import_job_worker.start()
     yield
     # Shutdown
+    await import_job_worker.stop()
     await suwayomi_scheduler.stop()
 
 

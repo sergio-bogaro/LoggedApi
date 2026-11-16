@@ -12,26 +12,80 @@ import httpx
 
 _ANILIST_URL = "https://graphql.anilist.co"
 
-# O AniList aceita ~90 requisições por minuto. Como o import do Suwayomi faz
-# uma busca por título, espaçamos as chamadas globalmente. O lock é de thread
-# (não asyncio) porque o mesmo serviço é usado na event loop principal e em
-# loops criados por syncs em background.
-_ANILIST_MIN_INTERVAL = 0.7
-_anilist_slot_lock = threading.Lock()
+# O AniList anuncia 90 req/min, mas atualmente opera em modo degradado
+# (30 req/min) e tem um burst limiter. Começamos pelo limite conservador,
+# ajustamos pelos headers e respeitamos Retry-After/X-RateLimit-Reset.
+_ANILIST_DEFAULT_LIMIT = 30
+_anilist_lock = threading.Lock()
+_anilist_limit = _ANILIST_DEFAULT_LIMIT
+_anilist_interval = 60.0 / _ANILIST_DEFAULT_LIMIT
 _anilist_next_slot = 0.0
+_anilist_blocked_until = 0.0
+
+
+def _observe_rate_limit(headers) -> None:
+    global _anilist_limit, _anilist_interval, _anilist_blocked_until
+
+    limit_raw = headers.get("X-RateLimit-Limit")
+    remaining_raw = headers.get("X-RateLimit-Remaining")
+    reset_raw = headers.get("X-RateLimit-Reset")
+
+    with _anilist_lock:
+        if limit_raw:
+            try:
+                limit = int(limit_raw)
+            except (TypeError, ValueError):
+                limit = 0
+            if limit > 0:
+                _anilist_limit = limit
+                # Nunca menos de 0,5 s entre chamadas, para não estourar o
+                # burst limiter mesmo com o limite de 90/min.
+                _anilist_interval = max(60.0 / limit, 0.5)
+
+        if remaining_raw == "0" and reset_raw:
+            try:
+                reset_epoch = float(reset_raw)
+            except (TypeError, ValueError):
+                reset_epoch = 0
+            if reset_epoch > 0:
+                wait = max(reset_epoch - time.time(), 0.0)
+                _anilist_blocked_until = max(
+                    _anilist_blocked_until, time.monotonic() + wait
+                )
+
+
+def _observe_retry_after(headers) -> None:
+    global _anilist_blocked_until
+
+    raw = headers.get("Retry-After")
+    try:
+        delay = float(raw) if raw else 5.0
+    except (TypeError, ValueError):
+        delay = 5.0
+    delay = min(max(delay, 1.0), 120.0)
+    with _anilist_lock:
+        _anilist_blocked_until = max(
+            _anilist_blocked_until, time.monotonic() + delay
+        )
 
 
 async def _throttle_anilist() -> None:
     global _anilist_next_slot
 
-    with _anilist_slot_lock:
-        now = time.monotonic()
-        slot = max(now, _anilist_next_slot)
-        _anilist_next_slot = slot + _ANILIST_MIN_INTERVAL
+    while True:
+        with _anilist_lock:
+            now = time.monotonic()
+            wait = max(
+                _anilist_blocked_until - now,
+                _anilist_next_slot - now,
+                0.0,
+            )
+            if wait <= 0:
+                _anilist_next_slot = now + _anilist_interval
+                return
+        # Acorda no máximo a cada 30 s para reavaliar bloqueios longos.
+        await asyncio.sleep(min(wait, 30.0))
 
-    delay = slot - time.monotonic()
-    if delay > 0:
-        await asyncio.sleep(delay)
 
 
 _MEDIA_FIELDS = """
@@ -124,9 +178,7 @@ def _chunks(values: list, size: int) -> list[list]:
 
 class AniListService:
     async def _query(self, query: str, variables: dict) -> dict:
-        response = None
-
-        for attempt in range(3):
+        for attempt in range(5):
             await _throttle_anilist()
             try:
                 # Cliente por chamada: o serviço também é usado em event loops
@@ -146,29 +198,28 @@ class AniListService:
             except httpx.HTTPError as exc:
                 raise ValueError(f"Falha ao contatar o AniList: {exc}") from exc
 
-            if response.status_code != 429:
-                break
+            _observe_rate_limit(response.headers)
 
-            if attempt < 2:
-                retry_after = response.headers.get("Retry-After")
-                try:
-                    delay = float(retry_after) if retry_after else 5.0
-                except ValueError:
-                    delay = 5.0
-                await asyncio.sleep(min(max(delay, 1.0), 30.0))
+            if response.status_code == 429:
+                _observe_retry_after(response.headers)
+                if attempt < 4:
+                    # O próximo _throttle_anilist espera o bloqueio.
+                    continue
+                raise ValueError(
+                    "O AniList limitou a taxa de requisições (429) repetidamente. "
+                    "Tente novamente mais tarde."
+                )
 
-        if response is None:
-            raise ValueError("Falha ao contatar o AniList.")
-        if response.status_code == 429:
-            raise ValueError("O AniList limitou a taxa de requisições (429). Tente novamente.")
-        if response.status_code >= 400:
-            raise ValueError(f"O AniList retornou um erro ({response.status_code}).")
+            if response.status_code >= 400:
+                raise ValueError(f"O AniList retornou um erro ({response.status_code}).")
 
-        data = response.json()
-        if data.get("errors"):
-            message = data["errors"][0].get("message", "erro desconhecido")
-            raise ValueError(f"AniList: {message}")
-        return data.get("data") or {}
+            data = response.json()
+            if data.get("errors"):
+                message = data["errors"][0].get("message", "erro desconhecido")
+                raise ValueError(f"AniList: {message}")
+            return data.get("data") or {}
+
+        raise ValueError("Falha ao contatar o AniList.")
 
     async def get_user_list(self, username: str, media_type: str) -> dict:
         data = await self._query(

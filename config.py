@@ -7,6 +7,10 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     database_url: str = "sqlite:///./logged.db"
     upload_dir: str = "./uploads"
+    # Arquivos temporários de importação. Ficam fora do diretório servido
+    # estaticamente em /uploads (não devem ser acessíveis pelo navegador).
+    # Quando vazio, usa uma pasta "imports" ao lado de upload_dir.
+    import_dir: str | None = None
     cors_origins: str = '["http://localhost:5173","http://localhost:3000"]'
 
     # IGDB / Twitch OAuth (fallback de instância; o usuário pode ter as próprias)
@@ -24,6 +28,9 @@ class Settings(BaseSettings):
     # Suwayomi-Server (conexão configurada por usuário no app)
     suwayomi_request_timeout: float = 15.0
 
+    # Worker de importações em background. Desligado em testes.
+    import_job_worker_enabled: bool = True
+
     @property
     def cors_origins_list(self) -> list[str]:
         return json.loads(self.cors_origins)
@@ -31,6 +38,16 @@ class Settings(BaseSettings):
     @property
     def upload_path(self) -> Path:
         path = Path(self.upload_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def import_path(self) -> Path:
+        path = (
+            Path(self.import_dir)
+            if self.import_dir
+            else self.upload_path.parent / "imports"
+        )
         path.mkdir(parents=True, exist_ok=True)
         return path
 

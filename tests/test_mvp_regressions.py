@@ -13,6 +13,8 @@ from unittest.mock import patch
 _TMP_DIR = Path(tempfile.mkdtemp(prefix="logged-tests-"))
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP_DIR.as_posix()}/test.db"
 os.environ["UPLOAD_DIR"] = str(_TMP_DIR / "uploads")
+# Os testes controlam o worker manualmente; o loop global fica desligado.
+os.environ["IMPORT_JOB_WORKER_ENABLED"] = "false"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -592,6 +594,281 @@ class SuwayomiTests(unittest.TestCase):
         response = self.client.get(f"/api/suwayomi/config?user_id={user_id}")
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("password", response.json())
+
+
+class ImportJobTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = TestClient(app, raise_server_exceptions=False)
+        cls.client.__enter__()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.client.__exit__(None, None, None)
+
+    def _user(self) -> int:
+        username = f"importjob_{uuid.uuid4().hex[:10]}"
+        response = self.client.post(
+            "/auth/register", json={"username": username, "password": "secret"}
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["id"]
+
+    def test_job_api_create_list_cancel_delete(self) -> None:
+        user_id = self._user()
+
+        response = self.client.post(
+            "/api/import/jobs",
+            data={
+                "user_id": user_id,
+                "provider_id": "anilist",
+                "username": "someone",
+                "media_type": "manga",
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        job = response.json()
+        job_id = job["id"]
+        self.assertEqual(job["status"], "queued")
+        self.assertEqual(job["provider"], "anilist")
+
+        listed = self.client.get(f"/api/import/jobs?user_id={user_id}")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()[0]["id"], job_id)
+
+        detail = self.client.get(f"/api/import/jobs/{job_id}?user_id={user_id}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()["progressTotal"], 0)
+
+        cancelled = self.client.post(
+            f"/api/import/jobs/{job_id}/cancel?user_id={user_id}"
+        )
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertEqual(cancelled.json()["status"], "cancelled")
+
+        deleted = self.client.delete(
+            f"/api/import/jobs/{job_id}?user_id={user_id}"
+        )
+        self.assertEqual(deleted.status_code, 204, deleted.text)
+
+        missing = self.client.get(f"/api/import/jobs/{job_id}?user_id={user_id}")
+        self.assertEqual(missing.status_code, 404)
+
+    def test_worker_matches_and_commit_uses_selected_items(self) -> None:
+        from database import SessionLocal
+        from models.enums import MediaTypeEnum
+        from models.import_job import ImportJob
+        from models.media import Media
+        from schemas.import_schemas import (
+            ImportCandidate,
+            ImportEntry,
+            ImportMatchResponse,
+            ImportMatchResult,
+            ImportPreviewCounts,
+            ImportPreviewResponse,
+        )
+        from services.import_jobs import worker as worker_module
+        from services.import_jobs.service import service as import_job_service
+
+        user_id = self._user()
+
+        class FakeProvider:
+            skip_existing = False
+
+            async def parse_username(self, username, media_type):
+                return ImportPreviewResponse(
+                    media_type=MediaTypeEnum.MANGA,
+                    entries=[
+                        ImportEntry(
+                            key="a",
+                            media_type=MediaTypeEnum.MANGA,
+                            title="Alpha",
+                            source="fake",
+                        ),
+                        ImportEntry(
+                            key="b",
+                            media_type=MediaTypeEnum.MANGA,
+                            title="Beta",
+                            source="fake",
+                        ),
+                    ],
+                    counts=ImportPreviewCounts(total=2),
+                )
+
+        def fake_candidate(external_id: str, title: str):
+            return ImportCandidate(
+                provider="anilist",
+                external_id=external_id,
+                media_type=MediaTypeEnum.MANGA,
+                title=title,
+                score=1.0,
+            )
+
+        async def fake_match(_db, request, _tmdb_key, _igdb_credentials):
+            results = []
+            for item in request.items:
+                if item.key == "a":
+                    candidate = fake_candidate("alpha-1", "Alpha")
+                    results.append(
+                        ImportMatchResult(
+                            key="a",
+                            status="matched",
+                            match=candidate,
+                            candidates=[candidate],
+                        )
+                    )
+                else:
+                    results.append(ImportMatchResult(key="b", status="not_found"))
+            return ImportMatchResponse(results=results)
+
+        db = SessionLocal()
+        try:
+            job = import_job_service.create(
+                db,
+                user_id=user_id,
+                provider="fake",
+                input_type="username",
+                media_type=MediaTypeEnum.MANGA,
+                source_username="someone",
+            )
+
+            with patch.object(worker_module, "get_provider", return_value=FakeProvider()), patch.object(
+                worker_module.matcher, "match", fake_match
+            ):
+                asyncio.run(worker_module.worker.process(job.id))
+
+            db.expire_all()
+            job = db.get(ImportJob, job.id)
+            self.assertEqual(job.status, "ready", job.error)
+            self.assertEqual(job.progress_total, 2)
+            self.assertEqual(job.progress_done, 2)
+
+            items = self.client.get(
+                f"/api/import/jobs/{job.id}/items?user_id={user_id}"
+            )
+            self.assertEqual(items.status_code, 200, items.text)
+            body = items.json()
+            self.assertEqual(body["total"], 2)
+            by_key = {item["key"]: item for item in body["items"]}
+            self.assertEqual(by_key["a"]["matchStatus"], "matched")
+            self.assertEqual(by_key["b"]["matchStatus"], "not_found")
+
+            beta_id = by_key["b"]["id"]
+            selected = self.client.patch(
+                f"/api/import/jobs/{job.id}/items/{beta_id}?user_id={user_id}",
+                json={
+                    "selected": {
+                        "provider": "anilist",
+                        "externalId": "beta-1",
+                        "mediaType": "manga",
+                        "title": "Beta",
+                        "score": 1.0,
+                    }
+                },
+            )
+            self.assertEqual(selected.status_code, 200, selected.text)
+            self.assertEqual(selected.json()["selected"]["externalId"], "beta-1")
+
+            committed = self.client.post(
+                f"/api/import/jobs/{job.id}/commit?user_id={user_id}",
+                json={"addToBacklog": False},
+            )
+            self.assertEqual(committed.status_code, 200, committed.text)
+            self.assertEqual(committed.json()["imported"], 2)
+
+            db.expire_all()
+            job = db.get(ImportJob, job.id)
+            self.assertEqual(job.status, "done")
+            self.assertIsNotNone(job.summary_json)
+            import json as json_module
+
+            stored_summary = json_module.loads(job.summary_json)
+            self.assertIn("logsCreated", stored_summary)
+            self.assertNotIn("logs_created", stored_summary)
+
+            external_ids = {
+                media.external_id
+                for media in db.query(Media).filter(Media.user_id == user_id).all()
+            }
+            self.assertIn("alpha-1", external_ids)
+            self.assertIn("beta-1", external_ids)
+        finally:
+            db.close()
+
+    def test_anilist_limiter_adapts_to_headers(self) -> None:
+        from services import anilist_service as anilist
+
+        original_limit = anilist._anilist_limit
+        original_interval = anilist._anilist_interval
+        try:
+            anilist._observe_rate_limit(
+                {"X-RateLimit-Limit": "90", "X-RateLimit-Remaining": "50"}
+            )
+            self.assertEqual(anilist._anilist_limit, 90)
+            self.assertAlmostEqual(anilist._anilist_interval, 60.0 / 90, places=3)
+
+            anilist._observe_rate_limit(
+                {"X-RateLimit-Limit": "30", "X-RateLimit-Remaining": "20"}
+            )
+            self.assertEqual(anilist._anilist_limit, 30)
+            self.assertAlmostEqual(anilist._anilist_interval, 2.0, places=3)
+        finally:
+            anilist._anilist_limit = original_limit
+            anilist._anilist_interval = original_interval
+
+    def test_worker_reads_file_job_and_cleans_temp_file(self) -> None:
+        from pathlib import Path as FilePath
+
+        from database import SessionLocal
+        from models.import_job import ImportJob
+        from schemas.import_schemas import ImportMatchResponse, ImportMatchResult
+        from services.import_jobs import worker as worker_module
+
+        user_id = self._user()
+        csv = (
+            "Date,Name,Year,Letterboxd URI\n"
+            "2024-01-01,Alpha,2024,https://boxd.it/abc\n"
+        )
+
+        response = self.client.post(
+            "/api/import/jobs",
+            data={
+                "user_id": user_id,
+                "provider_id": "letterboxd",
+                "media_type": "movies",
+            },
+            files={"file": ("watched.csv", csv.encode(), "text/csv")},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        job_id = response.json()["id"]
+
+        db = SessionLocal()
+        try:
+            job = db.get(ImportJob, job_id)
+            self.assertIsNotNone(job)
+            file_path = job.file_path
+            self.assertTrue(file_path)
+            self.assertTrue(FilePath(file_path).exists())
+
+            async def fake_match(_db, request, *_args):
+                return ImportMatchResponse(
+                    results=[
+                        ImportMatchResult(key=item.key, status="not_found")
+                        for item in request.items
+                    ]
+                )
+
+            with patch.object(worker_module.matcher, "match", fake_match):
+                asyncio.run(worker_module.worker.process(job_id))
+
+            db.expire_all()
+            job = db.get(ImportJob, job_id)
+            self.assertEqual(job.status, "ready", job.error)
+            self.assertEqual(job.progress_total, 1)
+            self.assertEqual(job.progress_done, 1)
+            self.assertFalse(FilePath(file_path).exists())
+        finally:
+            db.close()
 
 
 if __name__ == "__main__":
