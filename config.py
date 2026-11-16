@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     tmdb_base_url: str = "https://api.themoviedb.org/3"
     tmdb_request_timeout: float = 15.0
 
+    # Suwayomi-Server (conexão configurada por usuário no app)
+    suwayomi_request_timeout: float = 15.0
+
     @property
     def cors_origins_list(self) -> list[str]:
         return json.loads(self.cors_origins)

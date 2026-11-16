@@ -6,6 +6,8 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 # Precisa rodar antes de importar config/database/main.
 _TMP_DIR = Path(tempfile.mkdtemp(prefix="logged-tests-"))
@@ -289,6 +291,307 @@ class SchemaTests(unittest.TestCase):
         )
         self.assertEqual(media.release_date.year, 2024)
         self.assertEqual(media.release_date.month, 5)
+
+
+class SuwayomiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = TestClient(app, raise_server_exceptions=False)
+        cls.client.__enter__()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.client.__exit__(None, None, None)
+
+    def _user(self) -> int:
+        username = f"suwayomi_{uuid.uuid4().hex[:10]}"
+        response = self.client.post(
+            "/auth/register", json={"username": username, "password": "secret"}
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["id"]
+
+    def test_category_resolution_uses_order_and_ignores_default(self) -> None:
+        from models.enums import MediaStatusEnum
+        from services.suwayomi.categories import resolve_action
+
+        mappings = {
+            1: SimpleNamespace(action="status", status=MediaStatusEnum.IN_PROGRESS, category_order=2),
+            2: SimpleNamespace(action="backlog", status=None, category_order=3),
+            3: SimpleNamespace(action="ignore", status=None, category_order=1),
+            7: SimpleNamespace(action="status", status=MediaStatusEnum.FOLLOWING, category_order=1),
+        }
+        meta = {
+            1: {"order": 2},
+            2: {"order": 3},
+            3: {"order": 1},
+            7: {"order": 1},
+        }
+
+        action, status = resolve_action(
+            [{"id": 3}, {"id": 2}, {"id": 1}], mappings, meta
+        )
+        self.assertEqual((action, status), ("status", MediaStatusEnum.IN_PROGRESS))
+
+        action, status = resolve_action(
+            [{"id": 1}, {"id": 7}], mappings, meta
+        )
+        self.assertEqual((action, status), ("status", MediaStatusEnum.FOLLOWING))
+
+        action, status = resolve_action([], {}, {})
+        self.assertEqual((action, status), (None, None))
+
+        default_mapping = {
+            0: SimpleNamespace(action="backlog", status=None, category_order=0)
+        }
+        action, status = resolve_action([], default_mapping, {})
+        self.assertEqual((action, status), ("backlog", None))
+
+    def test_provider_imports_only_missing_titles(self) -> None:
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum
+        from models.media import Media
+        from models.suwayomi import SuwayomiCategoryMapping
+        from services.importer.providers import suwayomi as provider_module
+        from services.importer.providers.suwayomi import SuwayomiProvider
+
+        user_id = self._user()
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args) -> None:
+                return None
+
+            async def get_categories(self):
+                return [
+                    {"id": 1, "name": "Reading", "order": 2, "default": False},
+                    {"id": 2, "name": "Plan To Read", "order": 3, "default": False},
+                ]
+
+            async def get_library(self):
+                return [
+                    {
+                        "id": 10,
+                        "title": "Already Logged",
+                        "categories": {"nodes": [{"id": 1}]},
+                    },
+                    {
+                        "id": 11,
+                        "title": "New Manga",
+                        "description": "desc",
+                        "realUrl": "https://example.com/manga",
+                        "categories": {"nodes": [{"id": 2}]},
+                    },
+                ]
+
+        db = SessionLocal()
+        try:
+            db.add_all(
+                [
+                    SuwayomiCategoryMapping(
+                        user_id=user_id,
+                        category_id=1,
+                        category_name="Reading",
+                        category_order=2,
+                        action="status",
+                        status=MediaStatusEnum.IN_PROGRESS,
+                    ),
+                    SuwayomiCategoryMapping(
+                        user_id=user_id,
+                        category_id=2,
+                        category_name="Plan To Read",
+                        category_order=3,
+                        action="backlog",
+                    ),
+                    Media(
+                        user_id=user_id,
+                        external_id="already",
+                        title="Already Logged",
+                        type=MediaTypeEnum.MANGA,
+                    ),
+                ]
+            )
+            db.commit()
+
+            with patch.object(provider_module, "SuwayomiClient", FakeClient):
+                preview = asyncio.run(
+                    SuwayomiProvider().parse_url(
+                        "http://suwayomi.test", MediaTypeEnum.MANGA, db, user_id
+                    )
+                )
+
+            self.assertEqual(preview.counts.total, 1)
+            self.assertEqual(preview.counts.backlog, 1)
+            entry = preview.entries[0]
+            self.assertEqual(entry.title, "New Manga")
+            self.assertIsNone(entry.status)
+            self.assertTrue(entry.in_backlog)
+            self.assertEqual(entry.source, "suwayomi")
+            self.assertEqual(entry.external_refs["suwayomiId"], "11")
+        finally:
+            db.close()
+
+    def test_sync_applies_category_transitions(self) -> None:
+        from datetime import datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum
+        from models.media import Media
+        from models.media_list_item import MediaListItem
+        from models.suwayomi import (
+            SuwayomiAccount,
+            SuwayomiCategoryMapping,
+            SuwayomiMangaLink,
+        )
+        from services.suwayomi.sync import service
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            account = SuwayomiAccount(
+                user_id=user_id,
+                base_url="http://suwayomi.test",
+                enabled=False,
+            )
+            db.add(account)
+            db.add_all(
+                [
+                    SuwayomiCategoryMapping(
+                        user_id=user_id,
+                        category_id=7,
+                        category_name="Waiting Chapters",
+                        category_order=1,
+                        action="status",
+                        status=MediaStatusEnum.FOLLOWING,
+                    ),
+                    SuwayomiCategoryMapping(
+                        user_id=user_id,
+                        category_id=1,
+                        category_name="Reading",
+                        category_order=2,
+                        action="status",
+                        status=MediaStatusEnum.IN_PROGRESS,
+                    ),
+                    SuwayomiCategoryMapping(
+                        user_id=user_id,
+                        category_id=2,
+                        category_name="Plan To Read",
+                        category_order=3,
+                        action="backlog",
+                    ),
+                    SuwayomiCategoryMapping(
+                        user_id=user_id,
+                        category_id=4,
+                        category_name="Completed",
+                        category_order=4,
+                        action="status",
+                        status=MediaStatusEnum.FINISHED,
+                    ),
+                ]
+            )
+            media = Media(
+                user_id=user_id,
+                external_id="dandadan",
+                title="Dandadan",
+                type=MediaTypeEnum.MANGA,
+                status=MediaStatusEnum.ON_HOLD,
+            )
+            db.add(media)
+            db.commit()
+            db.refresh(media)
+
+            categories = [
+                {"id": 0, "name": "Default", "order": 0, "default": True},
+                {"id": 7, "name": "Waiting Chapters", "order": 1, "default": False},
+                {"id": 1, "name": "Reading", "order": 2, "default": False},
+                {"id": 2, "name": "Plan To Read", "order": 3, "default": False},
+                {"id": 4, "name": "Completed", "order": 4, "default": False},
+            ]
+
+            def run(category_id: int):
+                library = [
+                    {
+                        "id": 787,
+                        "title": "Dandadan",
+                        "categories": {"nodes": [{"id": category_id}]},
+                    }
+                ]
+                summary = service._empty_summary(datetime.now())
+                asyncio.run(
+                    service._run(db, account, categories, library, summary)
+                )
+                db.commit()
+                db.refresh(media)
+                return summary
+
+            run(7)
+            self.assertEqual(media.status, MediaStatusEnum.FOLLOWING)
+
+            run(4)
+            self.assertEqual(media.status, MediaStatusEnum.FINISHED)
+
+            run(2)
+            self.assertIsNone(media.status)
+            backlog = db.query(MediaListItem).filter_by(
+                user_id=user_id, media_id=media.id, list_type="backlog"
+            ).first()
+            self.assertIsNotNone(backlog)
+
+            run(1)
+            self.assertEqual(media.status, MediaStatusEnum.IN_PROGRESS)
+            db.refresh(media)
+            backlog = db.query(MediaListItem).filter_by(
+                user_id=user_id, media_id=media.id, list_type="backlog"
+            ).first()
+            self.assertIsNone(backlog)
+
+            link = db.query(SuwayomiMangaLink).filter_by(
+                user_id=user_id, suwayomi_manga_id=787
+            ).first()
+            self.assertIsNotNone(link)
+            self.assertEqual(link.media_id, media.id)
+            self.assertEqual(link.last_action, "status")
+            self.assertEqual(link.last_status, MediaStatusEnum.IN_PROGRESS)
+        finally:
+            db.close()
+
+    def test_config_never_exposes_password(self) -> None:
+        user_id = self._user()
+
+        class FakeClient:
+            async def get_categories(self):
+                raise ValueError("offline")
+
+            async def aclose(self) -> None:
+                return None
+
+        with patch("routers.suwayomi._account_client", return_value=FakeClient()):
+            response = self.client.put(
+                "/api/suwayomi/config",
+                json={
+                    "userId": user_id,
+                    "baseUrl": "http://suwayomi.test",
+                    "username": "user",
+                    "password": "secret",
+                    "enabled": False,
+                    "updatesPerDay": 4,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body["hasPassword"])
+        self.assertEqual(body["username"], "user")
+        self.assertNotIn("password", body)
+
+        response = self.client.get(f"/api/suwayomi/config?user_id={user_id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("password", response.json())
 
 
 if __name__ == "__main__":

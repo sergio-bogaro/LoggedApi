@@ -57,10 +57,16 @@ async def parse_provider(
     user_id: int = Form(...),
     media_type: MediaTypeEnum | None = Form(None),
     username: str | None = Form(None),
+    source_url: str | None = Form(None),
     file: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
 ):
-    """Lê a fonte do provedor (arquivo ou username) e devolve os itens normalizados."""
+    """Lê a fonte do provedor (arquivo, username ou servidor) e devolve os itens normalizados."""
     provider = get_provider(provider_id)
+    if provider.input_type == "url":
+        if not source_url:
+            raise ValueError("Informe a URL do servidor Suwayomi.")
+        return await provider.parse_url(source_url, media_type, db, user_id)
     if provider.input_type == "file":
         if file is None:
             raise ValueError("Envie o arquivo da importação.")

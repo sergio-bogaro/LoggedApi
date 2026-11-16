@@ -1,9 +1,8 @@
 from collections.abc import Generator
 
+from config import settings
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
-
-from config import settings
 
 engine = create_engine(
     settings.database_url,
@@ -21,6 +20,7 @@ if engine.url.get_backend_name() == "sqlite":
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
+
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -67,7 +67,9 @@ def ensure_columns() -> None:
             current = {col["name"] for col in inspector.get_columns(table)}
             for name, ddl in columns.items():
                 if name not in current:
-                    conn.execute(text(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {ddl}'))
+                    conn.execute(
+                        text(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {ddl}')
+                    )
                     print(f"Migration: added column {table}.{name}")
 
 
@@ -138,6 +140,35 @@ _REQUIRED_COLUMNS: dict[str, set[str]] = {
         "end_date",
     },
     "media_list_items": {"user_id", "media_type", "media_id", "list_type", "date_log"},
+    "suwayomi_accounts": {
+        "user_id",
+        "base_url",
+        "enabled",
+        "updates_per_day",
+        "last_sync_at",
+        "last_sync_status",
+        "last_sync_summary",
+        "next_sync_at",
+    },
+    "suwayomi_category_mappings": {
+        "user_id",
+        "category_id",
+        "category_name",
+        "category_order",
+        "action",
+        "status",
+    },
+    "suwayomi_manga_links": {
+        "user_id",
+        "suwayomi_manga_id",
+        "media_id",
+        "title",
+        "last_action",
+        "last_status",
+        "backlog_owned",
+        "last_seen_at",
+        "match_error",
+    },
     "tags": {"name"},
     "media_tags": {"media_id", "tag_id"},
 }

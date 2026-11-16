@@ -24,9 +24,11 @@ class ImportProviderInfo(_CamelModel):
     id: str
     label: str
     media_types: list[MediaTypeEnum]
-    # "file" (upload) ou "username" (busca por perfil público)
+    # "file" (upload), "username" (perfil público) ou "url" (servidor)
     input_type: str
     accepts: str | None = None
+    # Quando True, itens já existentes no Logged são ignorados na revisão.
+    skip_existing: bool = False
 
 
 # ──────────────────────────────────────────────
@@ -148,6 +150,10 @@ class ImportCommitEntry(_CamelModel):
     logs: list[ImportLogEntry] = []
     add_to_backlog: bool = False
     backlog_date: date | None = None
+    # Origem e referências extras; usadas para registrar vínculos de integrações
+    # (ex.: suwayomiId) no momento do commit.
+    source: str = ""
+    external_refs: dict[str, str] = {}
 
 
 class ImportCommitRequest(_CamelModel):

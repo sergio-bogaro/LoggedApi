@@ -22,7 +22,9 @@ from routers.favorites import router as favorites_router
 from routers.backlog import router as backlog_router
 from routers.igdb import router as igdb_router
 from routers.import_router import router as import_router
+from routers.suwayomi import router as suwayomi_router
 from routers.tmdb import router as tmdb_router
+from services.suwayomi.scheduler import scheduler as suwayomi_scheduler
 
 
 @asynccontextmanager
@@ -35,8 +37,10 @@ async def lifespan(app: FastAPI):
     drop_obsolete_tables()
     print("Database tables created")
     print(f"Upload directory: {settings.upload_path}")
+    await suwayomi_scheduler.start()
     yield
     # Shutdown
+    await suwayomi_scheduler.stop()
 
 
 app = FastAPI(
@@ -83,6 +87,7 @@ app.include_router(backlog_router)
 app.include_router(igdb_router)
 app.include_router(import_router)
 app.include_router(tmdb_router)
+app.include_router(suwayomi_router)
 
 
 @app.get("/", tags=["Health"])

@@ -4,9 +4,35 @@ Usado pelo importador para ler listas públicas (sem autenticação) e para casa
 anime/mangá. O `external_id` do Logged para anime/mangá é justamente o id do AniList.
 """
 
+import asyncio
+import threading
+import time
+
 import httpx
 
 _ANILIST_URL = "https://graphql.anilist.co"
+
+# O AniList aceita ~90 requisições por minuto. Como o import do Suwayomi faz
+# uma busca por título, espaçamos as chamadas globalmente. O lock é de thread
+# (não asyncio) porque o mesmo serviço é usado na event loop principal e em
+# loops criados por syncs em background.
+_ANILIST_MIN_INTERVAL = 0.7
+_anilist_slot_lock = threading.Lock()
+_anilist_next_slot = 0.0
+
+
+async def _throttle_anilist() -> None:
+    global _anilist_next_slot
+
+    with _anilist_slot_lock:
+        now = time.monotonic()
+        slot = max(now, _anilist_next_slot)
+        _anilist_next_slot = slot + _ANILIST_MIN_INTERVAL
+
+    delay = slot - time.monotonic()
+    if delay > 0:
+        await asyncio.sleep(delay)
+
 
 _MEDIA_FIELDS = """
   id
@@ -97,30 +123,48 @@ def _chunks(values: list, size: int) -> list[list]:
 
 
 class AniListService:
-    def __init__(self) -> None:
-        self._client: httpx.AsyncClient | None = None
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=20.0, follow_redirects=True)
-        return self._client
-
     async def _query(self, query: str, variables: dict) -> dict:
-        try:
-            resp = await self._get_client().post(
-                _ANILIST_URL,
-                json={"query": query, "variables": variables},
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
-            )
-        except httpx.HTTPError as exc:
-            raise ValueError(f"Falha ao contatar o AniList: {exc}") from exc
+        response = None
 
-        if resp.status_code == 429:
+        for attempt in range(3):
+            await _throttle_anilist()
+            try:
+                # Cliente por chamada: o serviço também é usado em event loops
+                # criados por syncs em background, e um AsyncClient não pode ser
+                # compartilhado entre loops.
+                async with httpx.AsyncClient(
+                    timeout=20.0, follow_redirects=True
+                ) as client:
+                    response = await client.post(
+                        _ANILIST_URL,
+                        json={"query": query, "variables": variables},
+                        headers={
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                        },
+                    )
+            except httpx.HTTPError as exc:
+                raise ValueError(f"Falha ao contatar o AniList: {exc}") from exc
+
+            if response.status_code != 429:
+                break
+
+            if attempt < 2:
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after else 5.0
+                except ValueError:
+                    delay = 5.0
+                await asyncio.sleep(min(max(delay, 1.0), 30.0))
+
+        if response is None:
+            raise ValueError("Falha ao contatar o AniList.")
+        if response.status_code == 429:
             raise ValueError("O AniList limitou a taxa de requisições (429). Tente novamente.")
-        if resp.status_code >= 400:
-            raise ValueError(f"O AniList retornou um erro ({resp.status_code}).")
+        if response.status_code >= 400:
+            raise ValueError(f"O AniList retornou um erro ({response.status_code}).")
 
-        data = resp.json()
+        data = response.json()
         if data.get("errors"):
             message = data["errors"][0].get("message", "erro desconhecido")
             raise ValueError(f"AniList: {message}")

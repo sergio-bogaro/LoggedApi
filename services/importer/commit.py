@@ -14,6 +14,7 @@ from models.enums import MediaStatusEnum
 from models.media import Media
 from models.media_list_item import MediaListItem
 from models.media_log import MediaLog
+from models.suwayomi import SuwayomiMangaLink
 from schemas.import_schemas import (
     ImportCommitEntry,
     ImportCommitItem,
@@ -184,7 +185,61 @@ class ImportCommitter:
             outcome.backlog = True
             outcome.changed = True
 
+        if entry.source == "suwayomi":
+            self._register_suwayomi_link(db, user_id, media, entry, outcome)
+
         return outcome
+
+    @staticmethod
+    def _register_suwayomi_link(
+        db: Session,
+        user_id: int,
+        media: Media,
+        entry: ImportCommitEntry,
+        outcome: _CommitOutcome,
+    ) -> None:
+        """Registra o vínculo do mangá importado para o sync periódico."""
+        raw_id = (entry.external_refs or {}).get("suwayomiId")
+        if not raw_id:
+            return
+        try:
+            suwayomi_id = int(raw_id)
+        except (TypeError, ValueError):
+            return
+
+        link = db.execute(
+            select(SuwayomiMangaLink).where(
+                SuwayomiMangaLink.user_id == user_id,
+                SuwayomiMangaLink.suwayomi_manga_id == suwayomi_id,
+            )
+        ).scalar_one_or_none()
+        if link is None:
+            link = SuwayomiMangaLink(
+                user_id=user_id,
+                suwayomi_manga_id=suwayomi_id,
+                title=entry.title,
+            )
+            db.add(link)
+
+        link.media_id = media.id
+        link.title = entry.title
+        link.last_seen_at = datetime.now()
+        link.match_error = None
+
+        if entry.add_to_backlog:
+            link.last_action = "backlog"
+            link.last_status = None
+        elif entry.status is not None:
+            link.last_action = "status"
+            link.last_status = entry.status
+        else:
+            # Categoria de backlog, mas o usuário desmarcou "adicionar ao
+            # backlog" na importação: respeita a escolha até a categoria mudar.
+            link.last_action = "backlog"
+            link.last_status = None
+
+        if outcome.backlog:
+            link.backlog_owned = True
 
     @staticmethod
     def _in_backlog(db: Session, user_id: int, media_id: int) -> bool:

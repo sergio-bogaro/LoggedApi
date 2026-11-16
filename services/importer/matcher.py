@@ -147,6 +147,25 @@ class ImportMatcher:
         ]
         return ImportMatchResponse(results=results)
 
+    async def resolve_manga(
+        self, db: Session, user_id: int, title: str, query: str | None = None
+    ) -> ImportMatchResult:
+        """Casa um único título de mangá — usado pelo sync do Suwayomi."""
+        refs = {"searchTitle": query} if query and query != title else {}
+        item = ImportMatchRequestItem(
+            key="suwayomi",
+            title=title,
+            media_type=MediaTypeEnum.MANGA,
+            external_refs=refs,
+        )
+        response = await self.match(
+            db,
+            ImportMatchRequest(user_id=user_id, items=[item]),
+            None,
+            (None, None),
+        )
+        return response.results[0]
+
     async def _prefetch_anilist(
         self, items: list[ImportMatchRequestItem]
     ) -> dict[str, ImportCandidate]:
@@ -254,7 +273,8 @@ class ImportMatcher:
             if cached:
                 return [cached]
 
-        return await self._anilist_search(media_type, item.title, item.year)
+        query = refs.get("searchTitle") or item.title
+        return await self._anilist_search(media_type, query, item.year)
 
     async def _anilist_search(
         self, media_type: MediaTypeEnum, query: str, year: int | None = None

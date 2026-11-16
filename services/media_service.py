@@ -263,8 +263,12 @@ class MediaService:
         image_path = media.image_path
 
         # Remove entradas de favoritos/backlog antes da mídia (não há relationship
-        # em MediaListItem), evitando itens órfãos.
+        # em MediaListItem), evitando itens órfãos. O vínculo com o Suwayomi
+        # também é removido; o sync recria se o título voltar.
         db.query(MediaListItem).filter(MediaListItem.media_id == media_id).delete()
+        from models.suwayomi import SuwayomiMangaLink
+
+        db.query(SuwayomiMangaLink).filter(SuwayomiMangaLink.media_id == media_id).delete()
 
         db.delete(media)
         db.commit()
