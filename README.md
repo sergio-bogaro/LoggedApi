@@ -118,6 +118,7 @@ rm .venv/bin/𝜋thon
 O projeto lê `.env` (via `pydantic-settings`). Variáveis úteis:
 - `DATABASE_URL` (ex: `sqlite:///./logged.db`)
 - `UPLOAD_DIR` (ex: `./uploads`)
+- `IMPORT_DIR` (opcional, ex: `./imports`) — arquivos temporários das importações em background, fora do `/uploads` público
 - `CORS_ORIGINS` (JSON string)
 
 Exemplo de `.env` mínimo:
