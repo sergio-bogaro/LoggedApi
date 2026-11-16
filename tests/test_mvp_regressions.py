@@ -595,6 +595,244 @@ class SuwayomiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("password", response.json())
 
+    def test_pending_link_resolves_manually_added_media(self) -> None:
+        from datetime import datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.media import Media
+        from models.suwayomi import (
+            SuwayomiAccount,
+            SuwayomiCategoryMapping,
+            SuwayomiMangaLink,
+        )
+        from services.suwayomi.sync import service
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            account = SuwayomiAccount(
+                user_id=user_id, base_url="http://suwayomi.test", enabled=False
+            )
+            db.add(account)
+            db.add(
+                SuwayomiCategoryMapping(
+                    user_id=user_id,
+                    category_id=1,
+                    category_name="Reading",
+                    category_order=2,
+                    action="status",
+                    status=MediaStatusEnum.IN_PROGRESS,
+                )
+            )
+            media = Media(
+                user_id=user_id,
+                external_id="dandadan",
+                title="Dandadan",
+                type=MediaTypeEnum.MANGA,
+                status=MediaStatusEnum.FINISHED,
+            )
+            db.add(media)
+            db.commit()
+            db.refresh(media)
+
+            link = SuwayomiMangaLink(
+                user_id=user_id,
+                suwayomi_manga_id=787,
+                media_id=None,
+                title="Dandadan",
+            )
+            db.add(link)
+            db.commit()
+
+            categories = [
+                {"id": 0, "name": "Default", "order": 0, "default": True},
+                {"id": 1, "name": "Reading", "order": 2, "default": False},
+            ]
+            library = [
+                {
+                    "id": 787,
+                    "title": "Dandadan",
+                    "categories": {"nodes": [{"id": 1}]},
+                }
+            ]
+            summary = service._empty_summary(datetime.now())
+            asyncio.run(service._run(db, account, categories, library, summary))
+            db.commit()
+            db.refresh(media)
+            db.refresh(link)
+
+            self.assertEqual(link.media_id, media.id)
+            self.assertEqual(media.status, MediaStatusEnum.IN_PROGRESS)
+            self.assertEqual(link.last_action, "status")
+            self.assertEqual(link.last_status, MediaStatusEnum.IN_PROGRESS)
+            self.assertIn("Dandadan", summary["pendingResolved"])
+        finally:
+            db.close()
+
+    def test_pending_link_retries_anilist_and_records_attempt(self) -> None:
+        from datetime import datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.media import Media
+        from models.suwayomi import (
+            SuwayomiAccount,
+            SuwayomiCategoryMapping,
+            SuwayomiMangaLink,
+        )
+        from schemas.import_schemas import ImportCandidate, ImportMatchResult
+        from services.suwayomi import sync as sync_module
+
+        user_id = self._user()
+
+        async def fake_resolve(_db, _uid, title, query=None):
+            candidate = ImportCandidate(
+                provider="anilist",
+                external_id="unknown-1",
+                media_type=MediaTypeEnum.MANGA,
+                title="Unknown Manga",
+                score=1.0,
+            )
+            return ImportMatchResult(
+                key="suwayomi",
+                status="matched",
+                match=candidate,
+                candidates=[candidate],
+            )
+
+        db = SessionLocal()
+        try:
+            account = SuwayomiAccount(
+                user_id=user_id, base_url="http://suwayomi.test", enabled=False
+            )
+            db.add(account)
+            db.add(
+                SuwayomiCategoryMapping(
+                    user_id=user_id,
+                    category_id=1,
+                    category_name="Reading",
+                    category_order=2,
+                    action="status",
+                    status=MediaStatusEnum.IN_PROGRESS,
+                )
+            )
+            link = SuwayomiMangaLink(
+                user_id=user_id,
+                suwayomi_manga_id=999,
+                media_id=None,
+                title="Unknown Manga",
+            )
+            db.add(link)
+            db.commit()
+
+            categories = [
+                {"id": 0, "name": "Default", "order": 0, "default": True},
+                {"id": 1, "name": "Reading", "order": 2, "default": False},
+            ]
+            library = [
+                {
+                    "id": 999,
+                    "title": "Unknown Manga",
+                    "categories": {"nodes": [{"id": 1}]},
+                }
+            ]
+            summary = sync_module.service._empty_summary(datetime.now())
+            with patch.object(sync_module.matcher, "resolve_manga", fake_resolve):
+                asyncio.run(
+                    sync_module.service._run(db, account, categories, library, summary)
+                )
+            db.commit()
+            db.refresh(link)
+
+            media = (
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id="unknown-1")
+                .first()
+            )
+            self.assertIsNotNone(media)
+            self.assertEqual(link.media_id, media.id)
+            self.assertEqual(link.match_attempts, 1)
+            self.assertIsNotNone(link.last_match_attempt_at)
+            self.assertEqual(summary["created"], 1)
+            self.assertIn("Unknown Manga", summary["pendingResolved"])
+        finally:
+            db.close()
+
+    def test_pending_link_respects_anilist_backoff(self) -> None:
+        from datetime import datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum
+        from models.suwayomi import (
+            SuwayomiAccount,
+            SuwayomiCategoryMapping,
+            SuwayomiMangaLink,
+        )
+        from services.suwayomi import sync as sync_module
+
+        user_id = self._user()
+        called = {"value": False}
+
+        async def fake_resolve(*_args, **_kwargs):
+            called["value"] = True
+            raise AssertionError("AniList não deveria ser chamado durante o backoff.")
+
+        db = SessionLocal()
+        try:
+            account = SuwayomiAccount(
+                user_id=user_id, base_url="http://suwayomi.test", enabled=False
+            )
+            db.add(account)
+            db.add(
+                SuwayomiCategoryMapping(
+                    user_id=user_id,
+                    category_id=1,
+                    category_name="Reading",
+                    category_order=2,
+                    action="status",
+                    status=MediaStatusEnum.IN_PROGRESS,
+                )
+            )
+            link = SuwayomiMangaLink(
+                user_id=user_id,
+                suwayomi_manga_id=1000,
+                media_id=None,
+                title="Still Unknown",
+                last_match_attempt_at=sync_module.utcnow(),
+                match_attempts=1,
+            )
+            db.add(link)
+            db.commit()
+
+            categories = [
+                {"id": 0, "name": "Default", "order": 0, "default": True},
+                {"id": 1, "name": "Reading", "order": 2, "default": False},
+            ]
+            library = [
+                {
+                    "id": 1000,
+                    "title": "Still Unknown",
+                    "categories": {"nodes": [{"id": 1}]},
+                }
+            ]
+            summary = sync_module.service._empty_summary(datetime.now())
+            with patch.object(sync_module.matcher, "resolve_manga", fake_resolve):
+                asyncio.run(
+                    sync_module.service._run(db, account, categories, library, summary)
+                )
+            db.commit()
+            db.refresh(link)
+
+            self.assertFalse(called["value"])
+            self.assertIsNone(link.media_id)
+            self.assertEqual(link.match_attempts, 1)
+            self.assertTrue(
+                any(item["title"] == "Still Unknown" for item in summary["unmatched"])
+            )
+        finally:
+            db.close()
+
 
 class ImportJobTests(unittest.TestCase):
     @classmethod

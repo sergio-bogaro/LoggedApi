@@ -29,6 +29,8 @@ from services.suwayomi.categories import (
 )
 from services.suwayomi.client import SuwayomiClient
 
+_PENDING_RETRY_INTERVAL = timedelta(hours=24)
+
 
 def utcnow() -> datetime:
     """Agora em UTC, sem timezone, no mesmo formato do SQLite do app."""
@@ -337,6 +339,8 @@ class SuwayomiSyncService:
                             media_id=None,
                             title=title,
                             last_seen_at=now,
+                            last_match_attempt_at=now,
+                            match_attempts=1,
                             match_error=(
                                 result.error
                                 or "Título não encontrado no AniList; resolva na página Importar."
@@ -362,12 +366,27 @@ class SuwayomiSyncService:
             if link.media_id is None:
                 link.last_seen_at = now
                 link.title = title
-                self._append_unmatched(
-                    summary,
+                resolved = await self._resolve_pending_link(
+                    db,
+                    user_id,
+                    link,
                     title,
-                    link.match_error or "Título pendente de revisão na página Importar.",
+                    manga,
+                    action,
+                    status,
+                    account,
+                    existing_by_title,
+                    media_by_id,
+                    summary,
                 )
-                continue
+                if not resolved:
+                    self._append_unmatched(
+                        summary,
+                        title,
+                        link.match_error
+                        or "Título pendente de revisão na página Importar.",
+                    )
+                    continue
 
             media = media_by_id.get(link.media_id)
             if media is None:
@@ -414,6 +433,82 @@ class SuwayomiSyncService:
         summary["library"] = len(library)
         summary["processed"] = len(seen)
 
+    async def _resolve_pending_link(
+        self,
+        db: Session,
+        user_id: int,
+        link: SuwayomiMangaLink,
+        title: str,
+        manga: dict,
+        action: str,
+        status: MediaStatusEnum | None,
+        account: SuwayomiAccount,
+        existing_by_title: dict[str, Media],
+        media_by_id: dict[int, Media],
+        summary: dict,
+    ) -> bool:
+        """Tenta resolver um link que ficou pendente em syncs anteriores.
+
+        Título exato é tentado sempre (barato e resolve o caso de mídia
+        adicionada manualmente). O AniList é tentado no máximo uma vez a cada
+        24h para não martelar a API com títulos que nunca vão casar.
+        """
+        media = existing_by_title.get(normalize_title(title))
+
+        if media is None:
+            now = utcnow()
+            if (
+                link.last_match_attempt_at is not None
+                and now - link.last_match_attempt_at < _PENDING_RETRY_INTERVAL
+            ):
+                return False
+
+            link.last_match_attempt_at = now
+            link.match_attempts = (link.match_attempts or 0) + 1
+
+            try:
+                result = await matcher.resolve_manga(
+                    db, user_id, title, search_title(title)
+                )
+            except Exception as exc:  # noqa: BLE001 — tenta de novo no próximo sync
+                link.match_error = str(exc)
+                if len(summary["errors"]) < 50:
+                    summary["errors"].append(f"{title}: {exc}")
+                return False
+
+            if result.status == "already_in_library" and result.existing_media_id:
+                media = _get_media(db, result.existing_media_id)
+            elif result.status == "matched" and result.match is not None:
+                media = _create_media(
+                    db,
+                    user_id,
+                    manga,
+                    result.match,
+                    status if action == ACTION_STATUS else None,
+                    account.base_url,
+                )
+                media_by_id[media.id] = media
+                existing_by_title[normalize_title(media.title)] = media
+                summary["created"] += 1
+            else:
+                link.match_error = (
+                    result.error
+                    or "Título não encontrado no AniList; resolva na página Importar."
+                )
+                return False
+
+        if media is None:
+            link.match_error = "Título não encontrado no Logged nem no AniList."
+            return False
+
+        link.media_id = media.id
+        link.match_error = None
+        media_by_id[media.id] = media
+        existing_by_title.setdefault(normalize_title(media.title), media)
+        if len(summary["pendingResolved"]) < 50:
+            summary["pendingResolved"].append(title)
+        return True
+
     @staticmethod
     def _interval(updates_per_day: int) -> timedelta:
         per_day = min(max(int(updates_per_day or 1), 1), 24)
@@ -435,6 +530,7 @@ class SuwayomiSyncService:
             "removed": [],
             "changes": [],
             "errors": [],
+            "pendingResolved": [],
         }
 
     @staticmethod

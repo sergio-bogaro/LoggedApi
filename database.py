@@ -49,6 +49,10 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "igdb_client_id": "TEXT",
         "igdb_client_secret": "TEXT",
     },
+    "suwayomi_manga_links": {
+        "last_match_attempt_at": "DATETIME",
+        "match_attempts": "INTEGER NOT NULL DEFAULT 0",
+    },
 }
 
 
@@ -168,6 +172,8 @@ _REQUIRED_COLUMNS: dict[str, set[str]] = {
         "backlog_owned",
         "last_seen_at",
         "match_error",
+        "last_match_attempt_at",
+        "match_attempts",
     },
     "import_jobs": {
         "user_id",
