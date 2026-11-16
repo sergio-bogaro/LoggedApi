@@ -105,6 +105,9 @@ class ImportCommitter:
         ).scalar_one_or_none()
 
         if media is None:
+            release_date = _to_datetime(entry.release_date)
+            if release_date is None and entry.year:
+                release_date = datetime(entry.year, 1, 1)
             media = Media(
                 user_id=user_id,
                 external_id=entry.external_id,
@@ -112,7 +115,7 @@ class ImportCommitter:
                 type=entry.media_type,
                 description=entry.overview,
                 cover_url=entry.cover_url,
-                release_date=_to_datetime(entry.release_date),
+                release_date=release_date,
                 status=entry.status,
                 rating=entry.rating,
                 review=entry.review,
@@ -137,15 +140,18 @@ class ImportCommitter:
             if not media.description and entry.overview:
                 media.description = entry.overview
                 outcome.changed = True
-            if media.release_date is None and entry.release_date:
-                media.release_date = _to_datetime(entry.release_date)
+            if media.release_date is None and (entry.release_date or entry.year):
+                fallback_date = _to_datetime(entry.release_date)
+                if fallback_date is None and entry.year:
+                    fallback_date = datetime(entry.year, 1, 1)
+                media.release_date = fallback_date
                 outcome.changed = True
 
-        existing_dates = {log.date for log in media.logs}
+        existing_keys = {(log.date, log.status) for log in media.logs}
         for log in entry.logs:
-            if log.date in existing_dates:
-                continue
             status = log.status or entry.status or MediaStatusEnum.FINISHED
+            if (log.date, status) in existing_keys:
+                continue
             end_date = log.end_date
             if end_date is None and status in (MediaStatusEnum.FINISHED, MediaStatusEnum.DROPPED):
                 end_date = _to_datetime(log.date)
@@ -161,7 +167,7 @@ class ImportCommitter:
                     end_date=end_date,
                 )
             )
-            existing_dates.add(log.date)
+            existing_keys.add((log.date, status))
             outcome.logs += 1
             outcome.changed = True
 

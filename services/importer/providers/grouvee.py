@@ -23,6 +23,8 @@ from schemas.import_schemas import (
 )
 from services.importer.providers.base import ImportProvider
 
+_MAX_ROWS = 50_000
+
 _SHELF_PRIORITY = ["Played", "Playing", "Wishlist", "Backlog"]
 
 
@@ -78,6 +80,8 @@ class GrouveeProvider(ImportProvider):
         rows = list(csv.reader(io.StringIO(text)))
         if not rows:
             raise ValueError("CSV do Grouvee vazio.")
+        if len(rows) > _MAX_ROWS:
+            raise ValueError("CSV do Grouvee tem linhas demais.")
 
         # A primeira linha é o cabeçalho; ignora se não começar com o id numérico.
         data_rows = rows[1:] if not (rows[0] and rows[0][0].strip().isdigit()) else rows

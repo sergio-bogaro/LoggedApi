@@ -32,7 +32,9 @@ class Media(Base):
         DateTime, server_default=func.now(), onupdate=func.now()
     )
 
-    # TODO: Pensar melhor na estrutura desses campos, talvez adicionar na tabela de logs ou criar uma tabela de status/rating/notes separados
+    # Resumo atual da mídia (exibido nas listas/cards). O histórico completo fica
+    # em MediaLog; editar a mídia altera o resumo, editar um log altera o histórico.
+    # TODO: avaliar unificar isso em uma única fonte no futuro.
     status: Mapped[MediaStatusEnum | None] = mapped_column(Enum(MediaStatusEnum), nullable=True)
     rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     review: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -40,7 +42,11 @@ class Media(Base):
     user: Mapped["User"] = relationship("User", back_populates="media")
     
     logs: Mapped[list["MediaLog"]] = relationship(
-        "MediaLog", back_populates="media", cascade="all, delete-orphan", lazy="selectin"
+        "MediaLog",
+        back_populates="media",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="(MediaLog.date.desc(), MediaLog.id.desc())",
     )
 
     # Relacionamento Many-to-Many com Tags

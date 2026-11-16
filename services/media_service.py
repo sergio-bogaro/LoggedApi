@@ -1,8 +1,8 @@
 from datetime import date, datetime
 
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session, aliased, noload
 
 from models.media import Media
 from models.tag import Tag, media_tags
@@ -29,40 +29,80 @@ class MediaService:
         limit: int | None = None,
         offset: int = 0,
     ) -> list[MediaResponse]:
-        """Lista todas as mídias, com filtros opcionais."""
-        query = select(Media).where(Media.user_id == user_id)
+        """Lista as mídias do usuário com filtros, paginação e agregações no SQL."""
+        log_count_sq = (
+            select(func.count(MediaLog.id))
+            .where(MediaLog.media_id == Media.id)
+            .correlate(Media)
+            .scalar_subquery()
+        )
+        last_log_date_sq = (
+            select(func.max(MediaLog.date))
+            .where(MediaLog.media_id == Media.id)
+            .correlate(Media)
+            .scalar_subquery()
+        )
+        latest_status_sq = (
+            select(MediaLog.status)
+            .where(MediaLog.media_id == Media.id)
+            .order_by(MediaLog.date.desc(), MediaLog.id.desc())
+            .limit(1)
+            .correlate(Media)
+            .scalar_subquery()
+        )
+
+        query = select(Media, log_count_sq, last_log_date_sq, latest_status_sq).where(
+            Media.user_id == user_id
+        )
 
         if media_types:
             query = query.where(Media.type.in_(media_types))
-        if status:
-            query = query.where(Media.status == status)
         if search:
             query = query.where(Media.title.ilike(f"%{search}%"))
         if tags:
-            # Filtrar por tags - media deve ter TODAS as tags especificadas
+            # Uma tag por alias: reutilizar o mesmo join faria a segunda condição
+            # ser aplicada à mesma linha e o filtro AND nunca casaria.
             for tag_name in tags:
-                query = query.join(Media.tags).where(
-                    func.lower(Tag.name) == tag_name.strip().lower()
+                tag_alias = aliased(Tag)
+                query = query.join(Media.tags.of_type(tag_alias)).where(
+                    func.lower(tag_alias.name) == tag_name.strip().lower()
                 )
-
-        query = query.order_by(Media.updated_at.desc())
-        results = db.execute(query).scalars().all()
-
-        responses = [self._to_response(db, media) for media in results]
+        if has_logs is True:
+            query = query.where(last_log_date_sq.is_not(None))
+        elif has_logs is False:
+            query = query.where(last_log_date_sq.is_(None))
+        if status is not None:
+            query = query.where(
+                or_(
+                    Media.status == status,
+                    and_(Media.status.is_(None), latest_status_sq == status),
+                )
+            )
 
         if has_logs is True:
-            responses = [r for r in responses if r.last_log_date is not None]
+            query = query.order_by(last_log_date_sq.desc(), Media.id.desc())
+        else:
+            query = query.order_by(Media.updated_at.desc(), Media.id.desc())
 
-        # Sort by last_log_date descending (most recent first) when filtering by logs
-        if has_logs is True:
-            responses.sort(key=lambda r: r.last_log_date or date.min, reverse=True)
-
-        # Apply offset and limit
-        responses = responses[offset:]
+        if offset:
+            query = query.offset(offset)
         if limit is not None and limit > 0:
-            responses = responses[:limit]
+            query = query.limit(min(limit, 500))
 
-        return responses
+        # A listagem não precisa dos logs completos; as agregações acima já
+        # trazem contagem, última data e status derivado.
+        query = query.options(noload(Media.logs))
+
+        rows = db.execute(query).all()
+        return [
+            self._build_response(
+                media=media,
+                status=media.status if media.status is not None else latest_status,
+                log_count=log_count or 0,
+                last_log_date=last_log_date,
+            )
+            for media, log_count, last_log_date, latest_status in rows
+        ]
 
     def list_tags(
         self, db: Session, user_id: int, media_type: MediaTypeEnum | None = None
@@ -184,14 +224,15 @@ class MediaService:
         if not media or media.user_id != user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
-        # Remove imagem anterior se existir
-        if media.image_path:
-            self.image_service.delete(media.image_path)
-
+        old_path = media.image_path
+        # Grava a nova imagem primeiro; a antiga só é removida após o commit,
+        # para que uma falha de validação não deixe a mídia sem capa.
         filename = await self.image_service.store(file)
         media.image_path = filename
         db.commit()
         db.refresh(media)
+        if old_path and old_path != filename:
+            self.image_service.delete(old_path)
 
         return self._to_response(db, media)
 
@@ -203,14 +244,13 @@ class MediaService:
         if not media or media.user_id != user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
-        # Remove imagem anterior se existir
-        if media.image_path:
-            self.image_service.delete(media.image_path)
-
+        old_path = media.image_path
         filename = await self.image_service.store_from_url(image_url)
         media.image_path = filename
         db.commit()
         db.refresh(media)
+        if old_path and old_path != filename:
+            self.image_service.delete(old_path)
 
         return self._to_response(db, media)
 
@@ -220,8 +260,7 @@ class MediaService:
         if not media or media.user_id != user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
-        if media.image_path:
-            self.image_service.delete(media.image_path)
+        image_path = media.image_path
 
         # Remove entradas de favoritos/backlog antes da mídia (não há relationship
         # em MediaListItem), evitando itens órfãos.
@@ -229,6 +268,8 @@ class MediaService:
 
         db.delete(media)
         db.commit()
+        if image_path:
+            self.image_service.delete(image_path)
 
     def _get_log_count(self, db: Session, media_id: int) -> int:
         result = db.execute(
@@ -257,16 +298,23 @@ class MediaService:
         if not logs:
             return None
 
-        return max(logs, key=lambda log: log.date).status
+        latest = max(logs, key=lambda log: (log.date, log.id))
+        return latest.status
 
-    def _to_response(self, db: Session, media: Media) -> MediaResponse:
+    def _build_response(
+        self,
+        media: Media,
+        status: MediaStatusEnum | None,
+        log_count: int,
+        last_log_date: date | None,
+    ) -> MediaResponse:
         return MediaResponse(
             id=media.id,
             user_id=media.user_id,
             external_id=media.external_id,
             title=media.title,
             type=media.type,
-            status=self._resolve_status(media),
+            status=status,
             description=media.description,
             cover_url=media.cover_url,
             image_path=media.image_path,
@@ -275,9 +323,17 @@ class MediaService:
             review=media.review,
             created_at=media.created_at,
             updated_at=media.updated_at,
+            log_count=log_count,
+            last_log_date=last_log_date,
+            tags=[tag.name for tag in media.tags],
+        )
+
+    def _to_response(self, db: Session, media: Media) -> MediaResponse:
+        return self._build_response(
+            media=media,
+            status=self._resolve_status(media),
             log_count=self._get_log_count(db, media.id),
             last_log_date=self._get_last_log_date(media),
-            tags=[tag.name for tag in media.tags],
         )
     # TODO: Validar esses ignonore 
     def _to_response_with_logs(self, db: Session, media: Media) -> MediaWithLogsResponse:
@@ -313,7 +369,7 @@ class MediaService:
                 
             # Buscar tag existente
             query = select(Tag).where(func.lower(Tag.name) == normalized_name)
-            tag = db.execute(query).scalar_one_or_none()
+            tag = db.execute(query).scalars().first()
             
             # Criar se não existir
             if not tag:
@@ -325,15 +381,16 @@ class MediaService:
         return tags
 
     async def remove_image(self, db: Session, media_id: int, user_id: int) -> MediaResponse:
-      """Remove a imagem customizada de uma mídia."""
-      media = db.get(Media, media_id)
-      if not media or media.user_id != user_id:
-          raise HTTPException(status_code=404, detail="Mídia não encontrada")
+        """Remove a imagem customizada de uma mídia."""
+        media = db.get(Media, media_id)
+        if not media or media.user_id != user_id:
+            raise HTTPException(status_code=404, detail="Mídia não encontrada")
 
-      if media.image_path:
-          self.image_service.delete(media.image_path)
-          media.image_path = None
-          db.commit()
-          db.refresh(media)
+        image_path = media.image_path
+        if image_path:
+            media.image_path = None
+            db.commit()
+            db.refresh(media)
+            self.image_service.delete(image_path)
 
-      return self._to_response(db, media)
+        return self._to_response(db, media)

@@ -20,6 +20,8 @@ from schemas.import_schemas import (
 )
 from services.importer.providers.base import ImportProvider
 
+_MAX_ROWS = 50_000
+
 # `Exclusive Shelf` → status do Logged (None = backlog).
 _SHELF_MAP: dict[str, MediaStatusEnum | None] = {
     "read": MediaStatusEnum.FINISHED,
@@ -93,6 +95,8 @@ class GoodreadsProvider(ImportProvider):
                 "CSV do Goodreads não reconhecido. Exporte em My Books → Import and "
                 "export → Export Library."
             )
+        if len(rows) > _MAX_ROWS:
+            raise ValueError("CSV do Goodreads tem linhas demais.")
 
         entries = [self._to_entry(row) for row in rows]
         entries = [entry for entry in entries if entry.title]

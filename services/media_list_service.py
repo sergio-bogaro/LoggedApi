@@ -2,7 +2,7 @@ from datetime import datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, noload
 
 from models.media import Media
 from models.media_list_item import MediaListItem
@@ -30,12 +30,14 @@ class MediaListService:
         """Lista todos os itens de uma lista (favorites/backlog) de um usuário."""
         self._validate_list_type(list_type)
         query = (
-            select(MediaListItem)
+            select(MediaListItem, Media)
+            .join(Media, Media.id == MediaListItem.media_id)
             .where(MediaListItem.user_id == user_id, MediaListItem.list_type == list_type)
-            .order_by(MediaListItem.date_log.desc())
+            .order_by(MediaListItem.date_log.desc(), MediaListItem.id.desc())
+            .options(noload(Media.logs), noload(Media.tags))
         )
-        results = db.execute(query).scalars().all()
-        return [self._to_response(db, item) for item in results]
+        rows = db.execute(query).all()
+        return [self._to_response(db, item, media=media) for item, media in rows]
 
     def check_in_list(
         self, db: Session, user_id: int, external_id: str, media_type: str, list_type: str
@@ -87,7 +89,7 @@ class MediaListService:
         db.commit()
         db.refresh(item)
 
-        return self._to_response(db, item)
+        return self._to_response(db, item, media=media)
 
     def batch_add(
         self, db: Session, items: list[MediaListItemCreate], list_type: str
@@ -139,10 +141,14 @@ class MediaListService:
         self, db: Session, external_id: str, media_type: str, user_id: int
     ) -> Media | None:
         """Busca uma mídia pelo external_id, tipo e usuário."""
-        query = select(Media).where(
-            Media.external_id == external_id,
-            Media.type == media_type,
-            Media.user_id == user_id,
+        query = (
+            select(Media)
+            .where(
+                Media.external_id == external_id,
+                Media.type == media_type,
+                Media.user_id == user_id,
+            )
+            .options(noload(Media.logs), noload(Media.tags))
         )
         return db.execute(query).scalar_one_or_none()
 
@@ -173,8 +179,10 @@ class MediaListService:
         )
         return db.execute(query).scalar_one_or_none()
 
-    def _to_response(self, db: Session, item: MediaListItem) -> MediaListItemResponse:
-        media = db.get(Media, item.media_id)
+    def _to_response(
+        self, db: Session, item: MediaListItem, media: Media | None = None
+    ) -> MediaListItemResponse:
+        media = media or db.get(Media, item.media_id)
         media_detail = MediaListItemMedia(
             id=media.id,
             external_id=media.external_id,

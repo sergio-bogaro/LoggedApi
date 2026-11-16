@@ -44,11 +44,11 @@ class User(Base):
 
     # Relacionamentos
     media: Mapped[list["Media"]] = relationship(
-        "Media", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
+        "Media", back_populates="user", cascade="all, delete-orphan"
     )
     
     logs: Mapped[list["MediaLog"]] = relationship(
-        "MediaLog", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
+        "MediaLog", back_populates="user", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

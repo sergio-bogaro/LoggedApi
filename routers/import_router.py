@@ -1,5 +1,8 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from database import get_db
 from models.enums import MediaTypeEnum
@@ -19,6 +22,27 @@ from services.importer.matcher import matcher
 from services.importer.registry import get_provider, list_providers
 
 router = APIRouter(prefix="/api/import", tags=["Import"])
+
+MAX_IMPORT_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
+
+def _parse_file_sync(provider, filename: str, raw: bytes):
+    """Executa o parser (CPU) fora da event loop."""
+    return asyncio.run(provider.parse_file(filename, raw))
+
+
+async def _read_limited(file: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(1024 * 1024):
+        total += len(chunk)
+        if total > MAX_IMPORT_FILE_SIZE:
+            raise ValueError(
+                "Arquivo de importação muito grande. Máximo: "
+                f"{MAX_IMPORT_FILE_SIZE // (1024 * 1024)}MB."
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.get("/providers", response_model=list[ImportProviderInfo])
@@ -40,7 +64,10 @@ async def parse_provider(
     if provider.input_type == "file":
         if file is None:
             raise ValueError("Envie o arquivo da importação.")
-        return await provider.parse_file(file.filename or "", await file.read())
+        raw = await _read_limited(file)
+        return await run_in_threadpool(
+            _parse_file_sync, provider, file.filename or "", raw
+        )
     if not username:
         raise ValueError("Informe o username.")
     return await provider.parse_username(username, media_type)

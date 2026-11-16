@@ -8,6 +8,9 @@ import gzip
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, time
 
+from defusedxml import ElementTree as SafeET
+from defusedxml.common import DefusedXmlException
+
 from models.enums import MediaStatusEnum, MediaTypeEnum
 from schemas.import_schemas import (
     ImportEntry,
@@ -25,6 +28,8 @@ _STATUS_MAP: dict[str, MediaStatusEnum | None] = {
     "4": MediaStatusEnum.DROPPED,
     "6": None,  # entra no backlog
 }
+
+_MAX_ENTRIES = 50_000
 
 
 def _text(element: ET.Element, tag: str) -> str:
@@ -68,24 +73,29 @@ class MalProvider(ImportProvider):
 
         data = self._maybe_gunzip(raw, filename)
         try:
-            root = ET.fromstring(data)
-        except ET.ParseError as exc:
+            root = SafeET.fromstring(data)
+        except (ET.ParseError, DefusedXmlException) as exc:
             raise ValueError("Não foi possível ler o XML do MyAnimeList.") from exc
 
         anime_entries = root.findall("anime/entry")
         manga_entries = root.findall("manga/entry")
+        if len(anime_entries) + len(manga_entries) > _MAX_ENTRIES:
+            raise ValueError("O XML do MyAnimeList tem entradas demais.")
 
-        if anime_entries:
-            media_type = MediaTypeEnum.ANIME
-            entries = [self._to_entry(element, media_type) for element in anime_entries]
-        elif manga_entries:
-            media_type = MediaTypeEnum.MANGA
-            entries = [self._to_entry(element, media_type) for element in manga_entries]
-        else:
+        entries = [
+            self._to_entry(element, MediaTypeEnum.ANIME) for element in anime_entries
+        ] + [
+            self._to_entry(element, MediaTypeEnum.MANGA) for element in manga_entries
+        ]
+
+        if not entries:
             raise ValueError(
                 "Nenhuma lista de anime ou mangá foi encontrada. Exporte a lista no "
                 "MyAnimeList (myanimelist.net/panel.php?go=export) e envie o .xml.gz."
             )
+
+        # O preview aceita um único media_type; cada entry carrega o tipo real.
+        media_type = MediaTypeEnum.ANIME if anime_entries else MediaTypeEnum.MANGA
 
         entries = [entry for entry in entries if entry.external_refs.get("malId")]
         counts = ImportPreviewCounts(

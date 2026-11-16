@@ -1,5 +1,5 @@
 import datetime
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 from models.enums import MediaStatusEnum, MediaTypeEnum
 
@@ -36,6 +36,13 @@ class MediaLogUpdate(BaseModel):
         alias_generator=to_camel,
         populate_by_name=True
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_null_date(cls, data: object) -> object:
+        if isinstance(data, dict) and "date" in data and data["date"] is None:
+            raise ValueError("A data do log não pode ser nula.")
+        return data
 
 
 class MediaLogResponse(MediaLogBase):

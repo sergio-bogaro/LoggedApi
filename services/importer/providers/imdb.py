@@ -17,6 +17,8 @@ from schemas.import_schemas import (
 )
 from services.importer.providers.base import ImportProvider
 
+_MAX_ROWS = 50_000
+
 _SERIES_TYPES = {"tvseries", "tvminiseries"}
 _MOVIE_TYPES = {"movie", "tvmovie", "short", "tvshort", "tvspecial", "video"}
 
@@ -77,6 +79,8 @@ class ImdbProvider(ImportProvider):
         ]
         if not rows:
             raise ValueError("CSV do IMDb vazio.")
+        if len(rows) > _MAX_ROWS:
+            raise ValueError("CSV do IMDb tem linhas demais.")
 
         headers = set(rows[0].keys())
         if "const" not in headers:

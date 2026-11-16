@@ -131,14 +131,20 @@ class ImportMatcher:
         async def resolve(item: ImportMatchRequestItem):
             async with semaphore:
                 try:
-                    return item, await self._candidates(item, tmdb_api_key, igdb_credentials, cache)
-                except Exception:  # noqa: BLE001 — uma falha vira "não encontrado"
-                    return item, []
+                    candidates = await self._candidates(
+                        item, tmdb_api_key, igdb_credentials, cache
+                    )
+                    return item, candidates, None
+                except Exception as exc:  # noqa: BLE001 — a falha é reportada no resultado
+                    return item, [], str(exc)
 
         resolved = await asyncio.gather(*(resolve(item) for item in items))
         existing = self._existing_media(db, data.user_id, resolved)
 
-        results = [self._build_result(item, candidates, existing) for item, candidates in resolved]
+        results = [
+            self._build_result(item, candidates, existing, error)
+            for item, candidates, error in resolved
+        ]
         return ImportMatchResponse(results=results)
 
     async def _prefetch_anilist(
@@ -221,10 +227,12 @@ class ImportMatcher:
         if item.media_type == MediaTypeEnum.BOOK:
             return await self._openlibrary_candidates(item)
         if item.media_type == MediaTypeEnum.GAME:
+            if not igdb_credentials[0] or not igdb_credentials[1]:
+                raise ValueError("Nenhuma credencial do IGDB configurada.")
             return await self._igdb_candidates(item, igdb_credentials)
         if item.media_type in (MediaTypeEnum.MOVIES, MediaTypeEnum.SERIES):
             if not tmdb_api_key:
-                return []
+                raise ValueError("Nenhuma chave do TMDB configurada.")
             return await self._tmdb_search_candidates(
                 item.media_type, item.title, item.year, tmdb_api_key, item.external_refs
             )
@@ -541,7 +549,7 @@ class ImportMatcher:
     def _existing_media(db: Session, user_id: int, resolved) -> dict[str, int]:
         pairs = {
             (item.media_type, candidates[0].external_id)
-            for item, candidates in resolved
+            for item, candidates, _error in resolved
             if candidates
         }
         existing: dict[str, int] = {}
@@ -564,9 +572,10 @@ class ImportMatcher:
         item: ImportMatchRequestItem,
         candidates: list[ImportCandidate],
         existing: dict[str, int],
+        error: str | None = None,
     ) -> ImportMatchResult:
         if not candidates:
-            return ImportMatchResult(key=item.key, status="not_found")
+            return ImportMatchResult(key=item.key, status="not_found", error=error)
 
         best = candidates[0]
         status = "matched"
@@ -589,6 +598,7 @@ class ImportMatcher:
             match=best,
             candidates=candidates,
             existing_media_id=media_id,
+            error=error,
         )
 
 

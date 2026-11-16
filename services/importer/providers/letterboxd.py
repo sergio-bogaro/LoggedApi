@@ -21,6 +21,8 @@ from schemas.import_schemas import (
 from services.importer.providers.base import ImportProvider
 
 _KNOWN_FILES = {"watched.csv", "diary.csv", "ratings.csv", "reviews.csv", "watchlist.csv"}
+_MAX_ARCHIVE_ENTRIES = 200
+_MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 
 
 def _normalize(text: str) -> str:
@@ -138,11 +140,29 @@ class LetterboxdProvider(ImportProvider):
         name = (filename or "").rsplit("/", 1)[-1].lower()
         if name.endswith(".zip") or raw[:2] == b"PK":
             result: dict[str, bytes] = {}
-            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                for info in archive.namelist():
-                    base = info.rsplit("/", 1)[-1].lower()
-                    if base in _KNOWN_FILES:
-                        result[base] = archive.read(info)
+            try:
+                with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                    infos = [
+                        info
+                        for info in archive.infolist()
+                        if info.filename.rsplit("/", 1)[-1].lower() in _KNOWN_FILES
+                    ]
+                    if len(infos) > _MAX_ARCHIVE_ENTRIES:
+                        raise ValueError("O ZIP do Letterboxd tem entradas demais.")
+                    if sum(info.file_size for info in infos) > _MAX_UNCOMPRESSED_BYTES:
+                        raise ValueError("O ZIP do Letterboxd é grande demais.")
+                    total = 0
+                    for info in infos:
+                        base = info.filename.rsplit("/", 1)[-1].lower()
+                        content = archive.read(info)
+                        total += len(content)
+                        if total > _MAX_UNCOMPRESSED_BYTES:
+                            raise ValueError("O ZIP do Letterboxd é grande demais.")
+                        result[base] = content
+            except (zipfile.BadZipFile, OSError) as exc:
+                raise ValueError(
+                    "O ZIP do Letterboxd não pôde ser lido. Envie o export completo."
+                ) from exc
             return result
 
         base = name or "watched.csv"

@@ -1,8 +1,9 @@
 from datetime import date, datetime
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 from models.enums import MediaStatusEnum, MediaTypeEnum
+from schemas.date_utils import parse_optional_datetime
 from schemas.media_log import MediaLogResponse
 
 
@@ -22,6 +23,11 @@ class MediaBase(BaseModel):
         populate_by_name=True
     )
 
+    @field_validator("release_date", mode="before")
+    @classmethod
+    def _normalize_release_date(cls, value: object) -> datetime | None:
+        return parse_optional_datetime(value)
+
 
 class MediaCreate(MediaBase):
     user_id: int
@@ -33,7 +39,6 @@ class MediaUpdate(BaseModel):
     status: MediaStatusEnum | None = None
     description: str | None = None
     cover_url: str | None = None
-    image_path: str | None = None
     release_date: datetime | None = None
     rating: float | None = Field(None, ge=0, le=10)
     review: str | None = None
@@ -43,6 +48,18 @@ class MediaUpdate(BaseModel):
         alias_generator=to_camel,
         populate_by_name=True
     )
+
+    @field_validator("release_date", mode="before")
+    @classmethod
+    def _normalize_release_date(cls, value: object) -> datetime | None:
+        return parse_optional_datetime(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_null_title(cls, data: object) -> object:
+        if isinstance(data, dict) and "title" in data and data["title"] is None:
+            raise ValueError("O título não pode ser nulo.")
+        return data
 
 
 class MediaResponse(MediaBase):

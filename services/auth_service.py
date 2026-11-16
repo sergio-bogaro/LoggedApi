@@ -62,7 +62,7 @@ class AuthService:
         user = AuthService.get_user_by_id(db, user_id)
         
         # Atualiza apenas os campos fornecidos
-        update_data = user_data.model_dump(exclude_unset=True)
+        update_data = user_data.model_dump(exclude_unset=True, exclude_none=True)
         
         # Verifica se o novo username já existe (se foi fornecido)
         if "username" in update_data and update_data["username"] != user.username:
