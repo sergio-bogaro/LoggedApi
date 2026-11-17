@@ -63,9 +63,9 @@ class LibraryProvider:
     # username | token | oauth
     auth_kind: str = "username"
     tracks_removals: bool = True
-    # Quando True, títulos ausentes passam pela fila de revisão. Um match exato
-    # (mesmo id externo da origem) ainda pode ser criado automaticamente.
-    review_missing: bool = False
+    # Quando True, a fila de revisão também vale no primeiro sync (baseline).
+    # Fora isso, o baseline continua apenas vinculando o que já existe.
+    review_baseline: bool = False
     # Quando True, o sync cria um MediaLog com a data de consumo da origem.
     creates_logs: bool = False
 

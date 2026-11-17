@@ -165,3 +165,36 @@ class SyncSuggestionStateUpdate(_CamelModel):
 
 class SyncSuggestionCountResponse(_CamelModel):
     pending: int
+
+
+class GlobalSyncSettings(_CamelModel):
+    enabled: bool = False
+    updates_per_day: int = 4
+    last_sync_at: datetime | None = None
+    last_sync_status: str | None = None
+    last_sync_summary: dict | None = None
+    next_sync_at: datetime | None = None
+
+
+class GlobalSyncConfigPayload(_CamelModel):
+    user_id: int
+    enabled: bool = False
+    updates_per_day: int = Field(4, ge=1, le=24)
+
+
+class GlobalSyncPayload(_CamelModel):
+    user_id: int
+
+
+class GlobalSyncResultItem(_CamelModel):
+    provider: str
+    status: str
+    summary: dict | None = None
+    error: str | None = None
+
+
+class GlobalSyncResponse(_CamelModel):
+    status: str
+    results: list[GlobalSyncResultItem] = []
+    ok: int = 0
+    failed: int = 0

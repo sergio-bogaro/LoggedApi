@@ -280,7 +280,7 @@ class LibrarySyncEngine:
 
         # Provedores em modo revisão não usam mais baseline_missing: um match
         # exato é criado e o restante vai para a fila de revisão.
-        if provider.review_missing:
+        if provider.review_baseline:
             baseline_missing.clear()
         summary["pendingReview"] = pending_count(
             db, connection.user_id, connection.provider
@@ -371,7 +371,15 @@ class LibrarySyncEngine:
                 item, media_by_external, media_by_title
             )
 
-        if media is None and provider.review_missing:
+        # Depois do baseline, todo provedor usa a fila: match exato cria direto,
+        # match duvidoso vira sugestão. O baseline dos provedores grandes
+        # continua apenas vinculando o que já existe.
+        use_review = (
+            provider.review_baseline
+            or suggestion is not None
+            or (not baseline and item.source_id not in baseline_missing)
+        )
+        if media is None and use_review:
             media = await self._resolve_review_item(
                 db,
                 connection,
@@ -396,17 +404,6 @@ class LibrarySyncEngine:
                 if len(summary["missingTitles"]) < _MAX_LIST:
                     summary["missingTitles"].append(item.title)
                 return
-
-        if media is None and not baseline and item.source_id not in baseline_missing:
-            media = await self._resolve_new_media(
-                db,
-                connection,
-                item,
-                link,
-                media_by_external,
-                media_by_title,
-                summary,
-            )
 
         if media is None:
             if baseline:
@@ -544,19 +541,24 @@ class LibrarySyncEngine:
         )
 
     @staticmethod
-    def _is_exact_match(item: SourceItem, candidate: ImportCandidate | None) -> bool:
-        return bool(
-            item.external_id
-            and candidate is not None
-            and str(candidate.external_id) == str(item.external_id)
-        )
+    def _is_perfect_match(
+        item: SourceItem,
+        candidate: ImportCandidate | None,
+        status: str | None,
+    ) -> bool:
+        if candidate is None:
+            return False
+        if item.external_id and str(candidate.external_id) == str(item.external_id):
+            return True
+        # Mesmo título e ano, sem concorrente próximo, também é match perfeito.
+        return status == "matched" and candidate.score >= 1.0
 
     async def _match_review_item(
         self,
         db: Session,
         connection: LibraryConnection,
         item: SourceItem,
-    ) -> tuple[Media | None, ImportCandidate | None, str | None]:
+    ) -> tuple[Media | None, ImportCandidate | None, str | None, str | None]:
         try:
             response = await matcher.match(
                 db,
@@ -578,20 +580,20 @@ class LibrarySyncEngine:
             )
             result = response.results[0] if response.results else None
         except Exception as exc:  # noqa: BLE001 — metadata indisponível
-            return None, None, str(exc)
+            return None, None, str(exc), None
 
         if result is None:
-            return None, None, "O matcher não retornou resultado."
+            return None, None, "O matcher não retornou resultado.", None
 
         if result.status == "already_in_library" and result.existing_media_id:
             media = _get_media(db, result.existing_media_id)
             if media is not None:
-                return media, result.match, result.error
+                return media, result.match, result.error, result.status
 
         candidate = result.match
         if candidate is None and result.candidates:
             candidate = result.candidates[0]
-        return None, candidate, result.error
+        return None, candidate, result.error, result.status
 
     async def _resolve_review_item(
         self,
@@ -629,7 +631,7 @@ class LibrarySyncEngine:
             suggestion.review_state = "pending"
             suggestion.decided_at = None
 
-        media, candidate, error = await self._match_review_item(
+        media, candidate, error, match_status = await self._match_review_item(
             db, connection, item
         )
         if media is not None:
@@ -638,7 +640,7 @@ class LibrarySyncEngine:
         if candidate is None:
             candidate = self._synthetic_candidate(connection, item)
 
-        if self._is_exact_match(item, candidate) and candidate is not None:
+        if self._is_perfect_match(item, candidate, match_status):
             media = self._create_media(db, connection.user_id, item, candidate)
             media_by_external[(item.media_type, str(candidate.external_id))] = media
             media_by_title.setdefault(
@@ -665,119 +667,6 @@ class LibrarySyncEngine:
             error=error,
         )
         return None
-
-    async def _resolve_new_media(
-        self,
-        db: Session,
-        connection: LibraryConnection,
-        item: SourceItem,
-        link: LibrarySyncLink,
-        media_by_external: dict[tuple[MediaTypeEnum, str], Media],
-        media_by_title: dict[tuple[MediaTypeEnum, str], Media],
-        summary: dict,
-    ) -> Media | None:
-        now = utcnow()
-        if (
-            link.last_match_attempt_at is not None
-            and now - link.last_match_attempt_at < _PENDING_INTERVAL
-            and link.match_error is not None
-        ):
-            summary["pending"] += 1
-            return None
-
-        link.last_match_attempt_at = now
-        link.match_attempts = (link.match_attempts or 0) + 1
-        link.match_error = None
-
-        refs = dict(item.external_refs or {})
-        if item.external_id:
-            if item.media_type in (MediaTypeEnum.ANIME, MediaTypeEnum.MANGA):
-                refs.setdefault("anilistId", item.external_id)
-            elif item.media_type in (MediaTypeEnum.MOVIES, MediaTypeEnum.SERIES):
-                refs.setdefault("tmdbId", item.external_id)
-
-        candidate: ImportCandidate | None = None
-        existing_id: int | None = None
-        # O Open Library já entrega o work id e metadados suficientes; não
-        # precisa de uma busca extra no matcher.
-        if item.media_type == MediaTypeEnum.BOOK and item.external_id:
-            candidate = ImportCandidate(
-                provider="openlibrary",
-                external_id=item.external_id,
-                media_type=item.media_type,
-                title=item.title,
-                year=item.year,
-                cover_url=item.cover_url,
-                overview=item.overview,
-                release_date=item.release_date,
-                score=1.0,
-            )
-        else:
-            try:
-                response = await matcher.match(
-                    db,
-                    ImportMatchRequest(
-                        user_id=connection.user_id,
-                        items=[
-                            ImportMatchRequestItem(
-                                key=item.source_id,
-                                title=item.title,
-                                year=item.year,
-                                overview=item.overview,
-                                media_type=item.media_type,
-                                external_refs=refs,
-                            )
-                        ],
-                    ),
-                    resolve_tmdb_key(db, connection.user_id),
-                    resolve_igdb_credentials(db, connection.user_id),
-                )
-                result = response.results[0] if response.results else None
-                if result is not None:
-                    if result.status == "already_in_library" and result.existing_media_id:
-                        existing_id = result.existing_media_id
-                    elif result.status == "matched" and result.match is not None:
-                        candidate = result.match
-                    else:
-                        link.match_error = (
-                            result.error
-                            or "Título não encontrado na metadata; resolva na página Importar."
-                        )
-            except Exception as exc:  # noqa: BLE001 — metadata indisponível
-                link.match_error = str(exc)
-
-        if existing_id is not None:
-            media = _get_media(db, existing_id)
-            if media is not None:
-                return media
-
-        if candidate is None and item.external_id:
-            candidate = ImportCandidate(
-                provider=connection.provider,
-                external_id=item.external_id,
-                media_type=item.media_type,
-                title=item.title,
-                year=item.year,
-                cover_url=item.cover_url,
-                overview=item.overview,
-                release_date=item.release_date,
-                score=0.5,
-            )
-
-        if candidate is None:
-            summary["pending"] += 1
-            if not link.match_error:
-                link.match_error = "Título não encontrado; resolva na página Importar."
-            db.flush()
-            return None
-
-        media = self._create_media(db, connection.user_id, item, candidate)
-        media_by_external[(item.media_type, candidate.external_id)] = media
-        media_by_title.setdefault(
-            (item.media_type, normalize_title(media.title)), media
-        )
-        summary["created"] += 1
-        return media
 
     def _create_media(
         self,

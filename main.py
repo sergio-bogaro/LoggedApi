@@ -26,7 +26,6 @@ from routers.suwayomi import router as suwayomi_router
 from routers.library_sync import router as library_sync_router
 from routers.tmdb import router as tmdb_router
 from services.import_jobs.worker import worker as import_job_worker
-from services.suwayomi.scheduler import scheduler as suwayomi_scheduler
 from services.library_sync.scheduler import scheduler as library_sync_scheduler
 
 
@@ -40,14 +39,12 @@ async def lifespan(app: FastAPI):
     drop_obsolete_tables()
     print("Database tables created")
     print(f"Upload directory: {settings.upload_path}")
-    await suwayomi_scheduler.start()
     await library_sync_scheduler.start()
     await import_job_worker.start()
     yield
     # Shutdown
     await import_job_worker.stop()
     await library_sync_scheduler.stop()
-    await suwayomi_scheduler.stop()
 
 
 app = FastAPI(

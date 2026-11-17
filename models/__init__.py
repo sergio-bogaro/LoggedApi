@@ -4,6 +4,7 @@ from models.library_sync import (
     LibraryConnection,
     LibraryStatusMapping,
     LibrarySyncLink,
+    LibrarySyncSettings,
     LibrarySyncSuggestion,
 )
 from models.media import Media
@@ -23,6 +24,7 @@ __all__ = [
     "LibraryConnection",
     "LibraryStatusMapping",
     "LibrarySyncLink",
+    "LibrarySyncSettings",
     "LibrarySyncSuggestion",
     "Media",
     "MediaListItem",

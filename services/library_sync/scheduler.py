@@ -1,18 +1,15 @@
-"""Agendador dos sincronizadores de biblioteca.
+"""Agendador global dos sincronizadores de biblioteca.
 
-Roda enquanto a API estiver de pé. Um sync por vez, globalmente, para respeitar
-os limites das APIs de metadata.
+Roda enquanto a API estiver de pé. A configuração é por usuário; quando vence,
+sincroniza todos os provedores incluídos, em sequência, para respeitar os
+limites das APIs de metadata.
 """
 
 import asyncio
-from datetime import datetime
-
-from sqlalchemy import or_, select
 
 from config import settings
 from database import SessionLocal
-from models.library_sync import LibraryConnection
-from services.library_sync.engine import sync_user, utcnow
+from services.library_sync.orchestrator import due_user_ids, sync_all_for_user
 
 _TICK_SECONDS = 60
 
@@ -51,29 +48,17 @@ class LibrarySyncScheduler:
                 pass
 
     async def _tick(self) -> None:
-        now: datetime = utcnow()
         db = SessionLocal()
         try:
-            rows = (
-                db.execute(
-                    select(LibraryConnection.user_id, LibraryConnection.provider).where(
-                        LibraryConnection.enabled.is_(True),
-                        or_(
-                            LibraryConnection.next_sync_at.is_(None),
-                            LibraryConnection.next_sync_at <= now,
-                        ),
-                    )
-                )
-                .all()
-            )
+            user_ids = due_user_ids(db)
         finally:
             db.close()
 
-        for user_id, provider in rows:
+        for user_id in user_ids:
             try:
-                await asyncio.to_thread(sync_user, user_id, provider)
-            except Exception as exc:  # noqa: BLE001 — uma conexão não derruba as outras
-                print(f"Library sync scheduler ({provider}, user {user_id}): {exc}")
+                await asyncio.to_thread(sync_all_for_user, user_id)
+            except Exception as exc:  # noqa: BLE001 — um usuário não derruba os outros
+                print(f"Library sync scheduler (user {user_id}): {exc}")
 
 
 scheduler = LibrarySyncScheduler()

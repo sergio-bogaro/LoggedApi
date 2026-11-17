@@ -2014,6 +2014,35 @@ class LibrarySyncTests(unittest.TestCase):
         db.refresh(connection)
         return connection
 
+    @staticmethod
+    def _exact_matcher(external_id: str, title: str, media_type):
+        from schemas.import_schemas import (
+            ImportCandidate,
+            ImportMatchResponse,
+            ImportMatchResult,
+        )
+
+        async def fake(db, request, tmdb_key, igdb):
+            candidate = ImportCandidate(
+                provider="tmdb",
+                external_id=external_id,
+                media_type=media_type,
+                title=title,
+                score=1.0,
+            )
+            return ImportMatchResponse(
+                results=[
+                    ImportMatchResult(
+                        key=request.items[0].key,
+                        status="matched",
+                        match=candidate,
+                        candidates=[candidate],
+                    )
+                ]
+            )
+
+        return fake
+
     def test_baseline_links_existing_and_does_not_overwrite(self) -> None:
         import asyncio
         import json
@@ -2105,7 +2134,16 @@ class LibrarySyncTests(unittest.TestCase):
                 external_id="tmdb-3",
             )
             provider = self._provider([item])
-            with patch.object(engine_module, "get_provider", return_value=provider):
+            with (
+                patch.object(engine_module, "get_provider", return_value=provider),
+                patch.object(
+                    engine_module.matcher,
+                    "match",
+                    new=self._exact_matcher(
+                        "tmdb-3", "New One", MediaTypeEnum.MOVIES
+                    ),
+                ),
+            ):
                 summary = asyncio.run(engine_module.engine.sync(db, connection))
             db.expire_all()
             media = (
@@ -2125,7 +2163,16 @@ class LibrarySyncTests(unittest.TestCase):
 
             item.status = "watched"
             provider = self._provider([item])
-            with patch.object(engine_module, "get_provider", return_value=provider):
+            with (
+                patch.object(engine_module, "get_provider", return_value=provider),
+                patch.object(
+                    engine_module.matcher,
+                    "match",
+                    new=self._exact_matcher(
+                        "tmdb-3", "New One", MediaTypeEnum.MOVIES
+                    ),
+                ),
+            ):
                 summary = asyncio.run(engine_module.engine.sync(db, connection))
             db.expire_all()
             media = db.get(Media, media.id)
@@ -2166,7 +2213,16 @@ class LibrarySyncTests(unittest.TestCase):
                 external_id="tmdb-4",
             )
             provider = self._provider([item])
-            with patch.object(engine_module, "get_provider", return_value=provider):
+            with (
+                patch.object(engine_module, "get_provider", return_value=provider),
+                patch.object(
+                    engine_module.matcher,
+                    "match",
+                    new=self._exact_matcher(
+                        "tmdb-4", "Manual", MediaTypeEnum.MOVIES
+                    ),
+                ),
+            ):
                 asyncio.run(engine_module.engine.sync(db, connection))
             media = (
                 db.query(Media)
@@ -2176,7 +2232,16 @@ class LibrarySyncTests(unittest.TestCase):
             media.status = MediaStatusEnum.ON_HOLD
             db.commit()
 
-            with patch.object(engine_module, "get_provider", return_value=provider):
+            with (
+                patch.object(engine_module, "get_provider", return_value=provider),
+                patch.object(
+                    engine_module.matcher,
+                    "match",
+                    new=self._exact_matcher(
+                        "tmdb-4", "Manual", MediaTypeEnum.MOVIES
+                    ),
+                ),
+            ):
                 summary = asyncio.run(engine_module.engine.sync(db, connection))
             db.expire_all()
             media = db.get(Media, media.id)
@@ -2185,7 +2250,16 @@ class LibrarySyncTests(unittest.TestCase):
 
             item.status = "watchlist"
             provider = self._provider([item])
-            with patch.object(engine_module, "get_provider", return_value=provider):
+            with (
+                patch.object(engine_module, "get_provider", return_value=provider),
+                patch.object(
+                    engine_module.matcher,
+                    "match",
+                    new=self._exact_matcher(
+                        "tmdb-4", "Manual", MediaTypeEnum.MOVIES
+                    ),
+                ),
+            ):
                 asyncio.run(engine_module.engine.sync(db, connection))
             db.expire_all()
             media = db.get(Media, media.id)
@@ -2195,7 +2269,7 @@ class LibrarySyncTests(unittest.TestCase):
 
     def _review_provider(self, items):
         provider = self._provider(items)
-        provider.review_missing = True
+        provider.review_baseline = True
         provider.creates_logs = True
         return provider
 
@@ -2639,6 +2713,259 @@ class LibrarySyncTests(unittest.TestCase):
             self.assertEqual(summary["pendingReview"], 0)
             self.assertEqual(
                 db.query(MediaLog).filter_by(media_id=media.id).count(), 1
+            )
+        finally:
+            db.close()
+
+    def test_global_sync_settings_endpoints(self) -> None:
+        user_id = self._user()
+
+        response = self.client.get(f"/api/integrations/global?user_id={user_id}")
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertFalse(body["enabled"])
+        self.assertEqual(body["updatesPerDay"], 4)
+
+        response = self.client.put(
+            "/api/integrations/global",
+            json={"userId": user_id, "enabled": True, "updatesPerDay": 8},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body["enabled"])
+        self.assertEqual(body["updatesPerDay"], 8)
+        self.assertIsNotNone(body["nextSyncAt"])
+
+        response = self.client.get(f"/api/integrations/global?user_id={user_id}")
+        self.assertTrue(response.json()["enabled"])
+        self.assertEqual(response.json()["updatesPerDay"], 8)
+
+    def test_sync_all_endpoint_returns_aggregate(self) -> None:
+        from unittest.mock import patch
+
+        user_id = self._user()
+
+        with patch(
+            "routers.library_sync.sync_all_for_user",
+            return_value={
+                "status": "partial",
+                "results": [
+                    {"provider": "anilist", "status": "ok", "summary": {}},
+                    {
+                        "provider": "letterboxd",
+                        "status": "failed",
+                        "error": "RSS indisponível.",
+                    },
+                ],
+                "ok": 1,
+                "failed": 1,
+            },
+        ):
+            response = self.client.post(
+                "/api/integrations/sync-all", json={"userId": user_id}
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["status"], "partial")
+        self.assertEqual(body["ok"], 1)
+        self.assertEqual(body["failed"], 1)
+        self.assertEqual(body["results"][1]["provider"], "letterboxd")
+        self.assertEqual(body["results"][1]["error"], "RSS indisponível.")
+
+    def test_only_included_providers_run_in_global_sync(self) -> None:
+        import json
+        from unittest.mock import patch
+
+        from database import SessionLocal
+        from models.library_sync import LibraryConnection, LibrarySyncSettings
+        from models.suwayomi import SuwayomiAccount
+        from services.library_sync import orchestrator
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            included = LibraryConnection(
+                user_id=user_id,
+                provider="anilist",
+                enabled=True,
+                updates_per_day=4,
+                auth_json=json.dumps({"username": "tester"}),
+                cursor_json="{}",
+            )
+            excluded = LibraryConnection(
+                user_id=user_id,
+                provider="mal",
+                enabled=False,
+                updates_per_day=4,
+                auth_json=json.dumps({"username": "tester"}),
+                cursor_json="{}",
+            )
+            unconnected = LibraryConnection(
+                user_id=user_id,
+                provider="trakt",
+                enabled=True,
+                updates_per_day=4,
+                auth_json="{}",
+                cursor_json="{}",
+            )
+            account = SuwayomiAccount(
+                user_id=user_id,
+                base_url="http://suwayomi.test",
+                enabled=True,
+            )
+            settings = LibrarySyncSettings(
+                user_id=user_id, enabled=True, updates_per_day=4
+            )
+            db.add_all([included, excluded, unconnected, account, settings])
+            db.commit()
+        finally:
+            db.close()
+
+        calls = {"generic": [], "suwayomi": 0}
+
+        def fake_sync(user_id_arg, provider_id):
+            calls["generic"].append(provider_id)
+            return {"status": "ok", "created": 1}
+
+        def fake_suwayomi(user_id_arg):
+            calls["suwayomi"] += 1
+            return {"status": "ok", "created": 2}
+
+        with (
+            patch.object(orchestrator, "sync_user", new=fake_sync),
+            patch.object(orchestrator.suwayomi_sync, "sync_user", new=fake_suwayomi),
+        ):
+            result = orchestrator.sync_all_for_user(user_id)
+
+        self.assertEqual(calls["generic"], ["anilist"])
+        self.assertEqual(calls["suwayomi"], 1)
+        self.assertEqual(result["ok"], 2)
+        self.assertEqual(result["failed"], 0)
+
+        db = SessionLocal()
+        try:
+            settings = (
+                db.query(LibrarySyncSettings)
+                .filter_by(user_id=user_id)
+                .one()
+            )
+            self.assertEqual(settings.last_sync_status, "ok")
+            self.assertIsNotNone(settings.last_sync_at)
+            self.assertIsNotNone(settings.next_sync_at)
+        finally:
+            db.close()
+
+    def test_non_review_provider_stages_imperfect_new_item(self) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from database import SessionLocal
+        from models.enums import MediaTypeEnum
+        from models.library_sync import LibrarySyncSuggestion
+        from models.media import Media
+        from services.library_sync import engine as engine_module
+        from services.library_sync.providers.base import SourceItem
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            connection = self._connection(db, user_id)
+            provider = self._provider([])
+            with patch.object(engine_module, "get_provider", return_value=provider):
+                asyncio.run(engine_module.engine.sync(db, connection))
+
+            item = SourceItem(
+                source_id="stage-1",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Uncertain Movie",
+                status="watched",
+                external_id=f"tmdb-{uuid.uuid4().hex}",
+            )
+            provider = self._provider([item])
+
+            async def fake_match(db_session, request, tmdb_key, igdb):
+                return self._match_response(
+                    request,
+                    status="matched",
+                    external_id=f"tmdb-{uuid.uuid4().hex}",
+                    title="Uncertain Movie (Other)",
+                    media_type=MediaTypeEnum.MOVIES,
+                )
+
+            with (
+                patch.object(engine_module, "get_provider", return_value=provider),
+                patch.object(engine_module.matcher, "match", new=fake_match),
+            ):
+                summary = asyncio.run(engine_module.engine.sync(db, connection))
+
+            db.expire_all()
+            self.assertEqual(summary["created"], 0)
+            self.assertEqual(summary["reviewStaged"], 1)
+            self.assertEqual(summary["pendingReview"], 1)
+            self.assertEqual(
+                db.query(Media).filter_by(user_id=user_id).count(), 0
+            )
+            self.assertEqual(
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id, source_id="stage-1")
+                .count(),
+                1,
+            )
+        finally:
+            db.close()
+
+    def test_baseline_missing_is_not_staged_later(self) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from database import SessionLocal
+        from models.enums import MediaTypeEnum
+        from models.library_sync import LibrarySyncSuggestion
+        from services.library_sync import engine as engine_module
+        from services.library_sync.providers.base import SourceItem
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            connection = self._connection(db, user_id)
+            item = SourceItem(
+                source_id="baseline-missing",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Old Missing",
+                status="watched",
+                external_id=f"tmdb-{uuid.uuid4().hex}",
+            )
+            provider = self._provider([item])
+            calls = {"value": 0}
+
+            async def fake_match(db_session, request, tmdb_key, igdb):
+                calls["value"] += 1
+                return self._match_response(
+                    request,
+                    status="not_found",
+                    external_id=None,
+                    title="",
+                    media_type=MediaTypeEnum.MOVIES,
+                )
+
+            with (
+                patch.object(engine_module, "get_provider", return_value=provider),
+                patch.object(engine_module.matcher, "match", new=fake_match),
+            ):
+                first = asyncio.run(engine_module.engine.sync(db, connection))
+                second = asyncio.run(engine_module.engine.sync(db, connection))
+
+            self.assertEqual(first["missing"], 1)
+            self.assertEqual(first["reviewStaged"], 0)
+            self.assertEqual(second["missing"], 1)
+            self.assertEqual(second["reviewStaged"], 0)
+            self.assertEqual(calls["value"], 0)
+            self.assertEqual(
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id, source_id="baseline-missing")
+                .count(),
+                0,
             )
         finally:
             db.close()

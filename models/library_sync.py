@@ -194,3 +194,33 @@ class LibrarySyncSuggestion(Base):
             f"<LibrarySyncSuggestion(provider='{self.provider}', "
             f"source_id='{self.source_id}', state='{self.review_state}')>"
         )
+
+
+class LibrarySyncSettings(Base):
+    """Configuração global de sincronização de um usuário."""
+
+    __tablename__ = "library_sync_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    updates_per_day: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
+
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # ok | partial | failed
+    last_sync_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    last_sync_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return f"<LibrarySyncSettings(user_id={self.user_id}, enabled={self.enabled})>"

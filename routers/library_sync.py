@@ -15,6 +15,11 @@ from models.library_sync import (
     LibrarySyncSuggestion,
 )
 from schemas.library_sync import (
+    GlobalSyncConfigPayload,
+    GlobalSyncPayload,
+    GlobalSyncResponse,
+    GlobalSyncResultItem,
+    GlobalSyncSettings,
     OAuthPollPayload,
     OAuthPollResponse,
     OAuthStartResponse,
@@ -35,6 +40,11 @@ from schemas.library_sync import (
     SyncTestResponse,
 )
 from services.library_sync.engine import engine as sync_engine, sync_user, utcnow
+from services.library_sync.orchestrator import (
+    get_settings as get_global_settings,
+    save_settings as save_global_settings,
+    sync_all_for_user,
+)
 from services.library_sync.providers.base import LibraryProvider
 from services.library_sync.registry import get_provider, list_providers
 from services.library_sync.suggestions import (
@@ -140,6 +150,45 @@ def _ensure_connection(
     db.commit()
     db.refresh(connection)
     return connection
+
+
+def _global_settings_response(settings) -> GlobalSyncSettings:
+    return GlobalSyncSettings(
+        enabled=settings.enabled,
+        updates_per_day=settings.updates_per_day,
+        last_sync_at=settings.last_sync_at,
+        last_sync_status=settings.last_sync_status,
+        last_sync_summary=_decode_summary(settings.last_sync_summary),
+        next_sync_at=settings.next_sync_at,
+    )
+
+
+@router.get("/global", response_model=GlobalSyncSettings)
+def get_global_config(user_id: int, db: Session = Depends(get_db)):
+    """Configuração geral de sincronização do usuário."""
+    return _global_settings_response(get_global_settings(db, user_id))
+
+
+@router.put("/global", response_model=GlobalSyncSettings)
+def save_global_config(
+    data: GlobalSyncConfigPayload, db: Session = Depends(get_db)
+):
+    settings = save_global_settings(
+        db, data.user_id, data.enabled, data.updates_per_day
+    )
+    return _global_settings_response(settings)
+
+
+@router.post("/sync-all", response_model=GlobalSyncResponse)
+async def sync_all_now(data: GlobalSyncPayload):
+    """Sincroniza todos os provedores incluídos no sync geral."""
+    result = await asyncio.to_thread(sync_all_for_user, data.user_id)
+    return GlobalSyncResponse(
+        status=result["status"],
+        results=[GlobalSyncResultItem(**item) for item in result["results"]],
+        ok=result["ok"],
+        failed=result["failed"],
+    )
 
 
 def _suggestion_response(suggestion: LibrarySyncSuggestion) -> SyncSuggestion:
