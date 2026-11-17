@@ -1,5 +1,6 @@
 import json
 from datetime import timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select
@@ -7,6 +8,8 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from database import get_db
+from models.enums import MediaTypeEnum
+from models.media import Media
 from models.suwayomi import SuwayomiAccount, SuwayomiCategoryMapping, SuwayomiMangaLink
 from schemas.suwayomi import (
     SuwayomiCategoriesResponse,
@@ -14,6 +17,8 @@ from schemas.suwayomi import (
     SuwayomiCategory,
     SuwayomiConfigPayload,
     SuwayomiConfigResponse,
+    SuwayomiLink,
+    SuwayomiLinkUpdate,
     SuwayomiSyncResponse,
     SuwayomiTestPayload,
     SuwayomiTestResponse,
@@ -229,6 +234,80 @@ def _build_categories_response(
 
     result.sort(key=lambda item: (item.order, item.id))
     return SuwayomiCategoriesResponse(categories=result, stale=stale, error=error)
+
+
+def _link_response(link: SuwayomiMangaLink) -> SuwayomiLink:
+    return SuwayomiLink(
+        id=link.id,
+        suwayomi_manga_id=link.suwayomi_manga_id,
+        media_id=link.media_id,
+        title=link.title,
+        ignored=link.ignored,
+        match_error=link.match_error,
+        match_attempts=link.match_attempts,
+        last_match_attempt_at=link.last_match_attempt_at,
+        last_seen_at=link.last_seen_at,
+    )
+
+
+@router.get("/links", response_model=list[SuwayomiLink])
+def list_links(
+    user_id: int,
+    status: Literal["pending", "ignored", "all"] = "pending",
+    db: Session = Depends(get_db),
+):
+    """Lista vínculos que precisam de revisão ou que foram ignorados."""
+    query = select(SuwayomiMangaLink).where(SuwayomiMangaLink.user_id == user_id)
+    if status == "pending":
+        query = query.where(
+            SuwayomiMangaLink.media_id.is_(None),
+            SuwayomiMangaLink.ignored.is_(False),
+        )
+    elif status == "ignored":
+        query = query.where(SuwayomiMangaLink.ignored.is_(True))
+    query = query.order_by(SuwayomiMangaLink.title, SuwayomiMangaLink.id)
+    return [_link_response(link) for link in db.execute(query).scalars().all()]
+
+
+@router.patch("/links/{link_id}", response_model=SuwayomiLink)
+def update_link(
+    link_id: int,
+    data: SuwayomiLinkUpdate,
+    user_id: int,
+    db: Session = Depends(get_db),
+):
+    """Vincula o título a uma mídia existente ou ignora/restaura o vínculo."""
+    link = db.get(SuwayomiMangaLink, link_id)
+    if link is None or link.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Vínculo do Suwayomi não encontrado.")
+
+    fields = data.model_fields_set
+    if "media_id" in fields and data.media_id is not None:
+        media = db.get(Media, data.media_id)
+        if media is None or media.user_id != user_id:
+            raise HTTPException(status_code=404, detail="Mídia não encontrada.")
+        if media.type != MediaTypeEnum.MANGA:
+            raise ValueError("O Suwayomi só pode ser vinculado a mangás.")
+        link.media_id = media.id
+        link.ignored = False
+        link.match_error = None
+        link.last_match_attempt_at = None
+        link.match_attempts = 0
+        # Força a próxima sincronização a aplicar a categoria atual.
+        link.last_action = None
+        link.last_status = None
+
+    if "ignored" in fields and data.ignored is not None:
+        if data.ignored and link.media_id is not None:
+            raise ValueError("Desvincule a mídia antes de ignorar este título.")
+        link.ignored = data.ignored
+        link.match_error = None
+        link.last_match_attempt_at = None
+        link.match_attempts = 0
+
+    db.commit()
+    db.refresh(link)
+    return _link_response(link)
 
 
 @router.get("/config", response_model=SuwayomiConfigResponse)

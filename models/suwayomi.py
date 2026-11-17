@@ -116,6 +116,10 @@ class SuwayomiMangaLink(Base):
     # por ele ao sair da categoria).
     backlog_owned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Decisão explícita do usuário: "não importe nem sincronize este título".
+    # Só vale enquanto o link não tem mídia; ao vincular, o flag é limpo.
+    ignored: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     match_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_match_attempt_at: Mapped[datetime | None] = mapped_column(

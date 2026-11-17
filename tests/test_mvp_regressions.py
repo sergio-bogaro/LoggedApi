@@ -1313,6 +1313,364 @@ class SuwayomiTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_ignored_import_item_is_skipped_by_sync(self) -> None:
+        import json
+        from datetime import datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum
+        from models.import_job import ImportJob, ImportJobItem
+        from models.media import Media
+        from models.suwayomi import (
+            SuwayomiAccount,
+            SuwayomiCategoryMapping,
+            SuwayomiMangaLink,
+        )
+        from services.suwayomi.sync import service
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            job = ImportJob(
+                user_id=user_id,
+                provider="suwayomi",
+                media_type=MediaTypeEnum.MANGA,
+                input_type="url",
+                status="ready",
+            )
+            db.add(job)
+            db.flush()
+            item = ImportJobItem(
+                job_id=job.id,
+                key="suwayomi:301",
+                media_type=MediaTypeEnum.MANGA,
+                title="Ignored Manga",
+                source="suwayomi",
+                external_refs_json=json.dumps({"suwayomiId": "301"}),
+                match_status="not_found",
+            )
+            db.add(item)
+            db.commit()
+            job_id, item_id = job.id, item.id
+        finally:
+            db.close()
+
+        response = self.client.patch(
+            f"/api/import/jobs/{job_id}/items/{item_id}?user_id={user_id}",
+            json={"ignored": True},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        db = SessionLocal()
+        try:
+            link = (
+                db.query(SuwayomiMangaLink)
+                .filter_by(user_id=user_id, suwayomi_manga_id=301)
+                .one()
+            )
+            self.assertTrue(link.ignored)
+            link_id = link.id
+
+            account = SuwayomiAccount(
+                user_id=user_id, base_url="http://suwayomi.test", enabled=False
+            )
+            db.add(account)
+            db.add(
+                SuwayomiCategoryMapping(
+                    user_id=user_id,
+                    category_id=1,
+                    category_name="Reading",
+                    category_order=2,
+                    action="status",
+                    status=MediaStatusEnum.IN_PROGRESS,
+                )
+            )
+            db.commit()
+
+            categories = [
+                {"id": 1, "name": "Reading", "order": 2, "default": False}
+            ]
+            library = [
+                {
+                    "id": 301,
+                    "title": "Ignored Manga",
+                    "categories": {"nodes": [{"id": 1}]},
+                }
+            ]
+            summary = service._empty_summary(datetime.now())
+            asyncio.run(service._run(db, account, categories, library, summary))
+            db.commit()
+
+            self.assertEqual(summary["ignoredSkipped"], 1)
+            self.assertEqual(summary["unmatched"], [])
+            self.assertEqual(
+                db.query(Media)
+                .filter_by(user_id=user_id, title="Ignored Manga")
+                .count(),
+                0,
+            )
+        finally:
+            db.close()
+
+        response = self.client.patch(
+            f"/api/suwayomi/links/{link_id}?user_id={user_id}",
+            json={"ignored": False},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["ignored"])
+
+        db = SessionLocal()
+        try:
+            media = Media(
+                user_id=user_id,
+                external_id=f"ignored-{uuid.uuid4().hex}",
+                title="Ignored Manga",
+                type=MediaTypeEnum.MANGA,
+            )
+            db.add(media)
+            db.commit()
+
+            account = (
+                db.query(SuwayomiAccount).filter_by(user_id=user_id).one()
+            )
+            categories = [
+                {"id": 1, "name": "Reading", "order": 2, "default": False}
+            ]
+            library = [
+                {
+                    "id": 301,
+                    "title": "Ignored Manga",
+                    "categories": {"nodes": [{"id": 1}]},
+                }
+            ]
+            summary = service._empty_summary(datetime.now())
+            asyncio.run(service._run(db, account, categories, library, summary))
+            db.commit()
+
+            db.refresh(media)
+            self.assertEqual(media.status, MediaStatusEnum.IN_PROGRESS)
+            self.assertEqual(summary["ignoredSkipped"], 0)
+            self.assertEqual(summary["statusUpdated"], 1)
+            self.assertEqual(summary["unmatched"], [])
+        finally:
+            db.close()
+
+    def test_suwayomi_link_endpoints(self) -> None:
+        import uuid as uuid_module
+
+        from database import SessionLocal
+        from models.media import Media
+        from models.suwayomi import SuwayomiMangaLink
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            pending = SuwayomiMangaLink(
+                user_id=user_id,
+                suwayomi_manga_id=401,
+                title="Pending A",
+                match_error="Título não encontrado.",
+                match_attempts=2,
+            )
+            ignored = SuwayomiMangaLink(
+                user_id=user_id,
+                suwayomi_manga_id=402,
+                title="Pending B",
+                ignored=True,
+            )
+            manga = Media(
+                user_id=user_id,
+                external_id=f"manga-{uuid_module.uuid4().hex}",
+                title="Existing Manga",
+                type=MediaTypeEnum.MANGA,
+            )
+            movie = Media(
+                user_id=user_id,
+                external_id=f"movie-{uuid_module.uuid4().hex}",
+                title="Existing Movie",
+                type=MediaTypeEnum.MOVIES,
+            )
+            db.add_all([pending, ignored, manga, movie])
+            db.commit()
+            pending_id, ignored_id = pending.id, ignored.id
+            manga_id, movie_id = manga.id, movie.id
+        finally:
+            db.close()
+
+        response = self.client.get(
+            f"/api/suwayomi/links?user_id={user_id}&status=pending"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([link["title"] for link in response.json()], ["Pending A"])
+
+        response = self.client.get(
+            f"/api/suwayomi/links?user_id={user_id}&status=ignored"
+        )
+        self.assertEqual([link["id"] for link in response.json()], [ignored_id])
+
+        response = self.client.patch(
+            f"/api/suwayomi/links/{pending_id}?user_id={user_id}",
+            json={"ignored": True},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["ignored"])
+        self.assertIsNone(response.json()["matchError"])
+        self.assertEqual(response.json()["matchAttempts"], 0)
+
+        response = self.client.patch(
+            f"/api/suwayomi/links/{pending_id}?user_id={user_id}",
+            json={"mediaId": manga_id},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["mediaId"], manga_id)
+        self.assertFalse(response.json()["ignored"])
+
+        response = self.client.patch(
+            f"/api/suwayomi/links/{ignored_id}?user_id={user_id}",
+            json={"mediaId": movie_id},
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+
+    def test_commit_registers_ignored_suwayomi_items(self) -> None:
+        import json
+
+        from database import SessionLocal
+        from models.import_job import ImportJob, ImportJobItem
+        from models.suwayomi import SuwayomiMangaLink
+        from schemas.import_schemas import ImportCandidate
+        from services.import_jobs.serializers import candidate_to_json
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            job = ImportJob(
+                user_id=user_id,
+                provider="suwayomi",
+                media_type=MediaTypeEnum.MANGA,
+                input_type="url",
+                status="ready",
+            )
+            db.add(job)
+            db.flush()
+            ignored_item = ImportJobItem(
+                job_id=job.id,
+                key="suwayomi:501",
+                media_type=MediaTypeEnum.MANGA,
+                title="Ignored On Review",
+                source="suwayomi",
+                external_refs_json=json.dumps({"suwayomiId": "501"}),
+                match_status="not_found",
+                ignored=True,
+            )
+            candidate = ImportCandidate(
+                provider="anilist",
+                external_id=f"anilist-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.MANGA,
+                title="Selected Manga",
+            )
+            selected_item = ImportJobItem(
+                job_id=job.id,
+                key="suwayomi:502",
+                media_type=MediaTypeEnum.MANGA,
+                title="Selected Manga",
+                source="suwayomi",
+                external_refs_json=json.dumps({"suwayomiId": "502"}),
+                match_status="matched",
+                selected_json=candidate_to_json(candidate),
+            )
+            db.add_all([ignored_item, selected_item])
+            db.commit()
+            job_id = job.id
+        finally:
+            db.close()
+
+        response = self.client.post(
+            f"/api/import/jobs/{job_id}/commit?user_id={user_id}",
+            json={"addToBacklog": False},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["imported"], 1)
+
+        db = SessionLocal()
+        try:
+            link = (
+                db.query(SuwayomiMangaLink)
+                .filter_by(user_id=user_id, suwayomi_manga_id=501)
+                .one()
+            )
+            self.assertTrue(link.ignored)
+            self.assertIsNone(link.media_id)
+            selected_link = (
+                db.query(SuwayomiMangaLink)
+                .filter_by(user_id=user_id, suwayomi_manga_id=502)
+                .one()
+            )
+            self.assertIsNotNone(selected_link.media_id)
+            self.assertFalse(selected_link.ignored)
+        finally:
+            db.close()
+
+    def test_backfill_marks_ignored_import_items(self) -> None:
+        import json
+
+        from database import SessionLocal
+        from models.import_job import ImportJob, ImportJobItem
+        from models.suwayomi import SuwayomiMangaLink
+        from services.suwayomi.backfill import backfill
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            job = ImportJob(
+                user_id=user_id,
+                provider="suwayomi",
+                media_type=MediaTypeEnum.MANGA,
+                input_type="url",
+                status="done",
+            )
+            db.add(job)
+            db.flush()
+            db.add(
+                ImportJobItem(
+                    job_id=job.id,
+                    key="suwayomi:601",
+                    media_type=MediaTypeEnum.MANGA,
+                    title="Old Ignored",
+                    source="suwayomi",
+                    external_refs_json=json.dumps({"suwayomiId": "601"}),
+                    match_status="not_found",
+                    ignored=True,
+                )
+            )
+            pending = SuwayomiMangaLink(
+                user_id=user_id,
+                suwayomi_manga_id=601,
+                title="Old Ignored",
+                match_error="Título não encontrado.",
+            )
+            restored = SuwayomiMangaLink(
+                user_id=user_id,
+                suwayomi_manga_id=602,
+                title="Restored",
+                match_error=None,
+            )
+            db.add_all([pending, restored])
+            db.commit()
+
+            created, ignored = backfill(db)
+            self.assertEqual(created, 0)
+            self.assertEqual(ignored, 1)
+            db.refresh(pending)
+            db.refresh(restored)
+            self.assertTrue(pending.ignored)
+            self.assertIsNone(pending.match_error)
+            self.assertFalse(restored.ignored)
+
+            created, ignored = backfill(db)
+            self.assertEqual((created, ignored), (0, 0))
+        finally:
+            db.close()
+
 
 class ImportJobTests(unittest.TestCase):
     @classmethod

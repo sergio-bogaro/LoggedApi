@@ -88,3 +88,20 @@ class SuwayomiTestResponse(_CamelModel):
 class SuwayomiSyncResponse(_CamelModel):
     status: str
     summary: dict
+
+
+class SuwayomiLink(_CamelModel):
+    id: int
+    suwayomi_manga_id: int
+    media_id: int | None = None
+    title: str
+    ignored: bool = False
+    match_error: str | None = None
+    match_attempts: int = 0
+    last_match_attempt_at: datetime | None = None
+    last_seen_at: datetime | None = None
+
+
+class SuwayomiLinkUpdate(_CamelModel):
+    media_id: int | None = None
+    ignored: bool | None = None

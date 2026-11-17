@@ -52,6 +52,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "suwayomi_manga_links": {
         "last_match_attempt_at": "DATETIME",
         "match_attempts": "INTEGER NOT NULL DEFAULT 0",
+        "ignored": "BOOLEAN NOT NULL DEFAULT 0",
     },
 }
 
@@ -170,6 +171,7 @@ _REQUIRED_COLUMNS: dict[str, set[str]] = {
         "last_action",
         "last_status",
         "backlog_owned",
+        "ignored",
         "last_seen_at",
         "match_error",
         "last_match_attempt_at",

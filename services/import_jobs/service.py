@@ -8,6 +8,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from models.import_job import ImportJob, ImportJobItem
+from models.suwayomi import SuwayomiMangaLink
 from schemas.import_job import (
     ImportJobCommitRequest,
     ImportJobItemResponse,
@@ -20,6 +21,7 @@ from services.importer.commit import committer
 from services.import_jobs.serializers import (
     candidate_to_json,
     commit_entry,
+    external_refs_from_json,
     item_counts_for_filter,
     item_response,
     job_response,
@@ -29,6 +31,87 @@ from services.import_jobs.storage import delete_job_file
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _suwayomi_id(item: ImportJobItem) -> int | None:
+    if item.source != "suwayomi":
+        return None
+    raw = external_refs_from_json(item.external_refs_json).get("suwayomiId")
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _suwayomi_link(
+    db: Session, user_id: int, item: ImportJobItem
+) -> SuwayomiMangaLink | None:
+    suwayomi_id = _suwayomi_id(item)
+    if suwayomi_id is None:
+        return None
+
+    link = db.execute(
+        select(SuwayomiMangaLink).where(
+            SuwayomiMangaLink.user_id == user_id,
+            SuwayomiMangaLink.suwayomi_manga_id == suwayomi_id,
+        )
+    ).scalar_one_or_none()
+    if link is None:
+        link = SuwayomiMangaLink(
+            user_id=user_id,
+            suwayomi_manga_id=suwayomi_id,
+            title=item.title,
+        )
+        db.add(link)
+    elif item.title:
+        link.title = item.title
+    return link
+
+
+def _persist_suwayomi_ignore(
+    db: Session, user_id: int, item: ImportJobItem, ignored: bool
+) -> None:
+    """Guarda a decisão de ignorar/restaurar para a sincronização periódica.
+
+    Sem isso, o próximo sync trataria o título como novo e poderia criá-lo ou
+    listá-lo como pendente de match, desfazendo a escolha feita na revisão.
+    """
+    link = _suwayomi_link(db, user_id, item)
+    if link is None:
+        return
+
+    if ignored:
+        # Um vínculo já existente continua sendo sincronizado normalmente.
+        if link.media_id is None:
+            link.ignored = True
+            link.match_error = None
+            link.last_match_attempt_at = None
+            link.match_attempts = 0
+        return
+
+    link.ignored = False
+    link.match_error = None
+    link.last_match_attempt_at = None
+    link.match_attempts = 0
+
+
+def _persist_suwayomi_existing(
+    db: Session, user_id: int, item: ImportJobItem
+) -> None:
+    """Vincula um item que já existia no Logged, sem depender do match exato."""
+    if not item.existing_media_id:
+        return
+    link = _suwayomi_link(db, user_id, item)
+    if link is None or link.media_id is not None:
+        return
+    link.media_id = item.existing_media_id
+    link.ignored = False
+    link.match_error = None
+    link.last_match_attempt_at = None
+    link.match_attempts = 0
+    # A próxima sincronização aplica a categoria atual.
+    link.last_action = None
+    link.last_status = None
 
 
 def _filter_condition(name: str | None):
@@ -165,6 +248,7 @@ class ImportJobService:
             item.selected_json = candidate_to_json(data.selected)
         if data.ignored is not None:
             item.ignored = data.ignored
+            _persist_suwayomi_ignore(db, user_id, item, data.ignored)
 
         db.flush()
         set_counts(db, job)
@@ -195,6 +279,14 @@ class ImportJobService:
 
         entries = []
         for item in items:
+            if item.ignored and item.source == "suwayomi":
+                # Ignorados manuais não entram no commit, mas precisam ficar
+                # registrados para o sync não tentar criá-los depois.
+                if item.match_status == "already_in_library":
+                    _persist_suwayomi_existing(db, user_id, item)
+                else:
+                    _persist_suwayomi_ignore(db, user_id, item, True)
+                continue
             entry = commit_entry(item, data.add_to_backlog)
             if entry is not None:
                 entries.append(entry)

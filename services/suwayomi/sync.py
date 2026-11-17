@@ -372,6 +372,13 @@ class SuwayomiSyncService:
             now = utcnow()
             link = links.get(suwayomi_id)
 
+            # Ignorado manualmente na revisão da importação: não tenta match,
+            # não cria mídia e não aparece como pendente.
+            if link is not None and link.ignored and link.media_id is None:
+                link.last_seen_at = now
+                summary["ignoredSkipped"] += 1
+                continue
+
             if action is None:
                 if link is not None:
                     link.last_seen_at = now
@@ -423,7 +430,7 @@ class SuwayomiSyncService:
                             match_attempts=1,
                             match_error=(
                                 result.error
-                                or "Título não encontrado no AniList; resolva na página Importar."
+                                or "Título não encontrado no AniList; vincule ou ignore em Configurações → Suwayomi."
                             ),
                         )
                         db.add(link)
@@ -464,7 +471,7 @@ class SuwayomiSyncService:
                         summary,
                         title,
                         link.match_error
-                        or "Título pendente de revisão na página Importar.",
+                        or "Título pendente; vincule ou ignore em Configurações → Suwayomi.",
                     )
                     continue
 
@@ -590,7 +597,7 @@ class SuwayomiSyncService:
             else:
                 link.match_error = (
                     result.error
-                    or "Título não encontrado no AniList; resolva na página Importar."
+                    or "Título não encontrado no AniList; vincule ou ignore em Configurações → Suwayomi."
                 )
                 return False
 
@@ -625,6 +632,7 @@ class SuwayomiSyncService:
             "backlogRemoved": 0,
             "logsCreated": 0,
             "datedItems": 0,
+            "ignoredSkipped": 0,
             "unmatched": [],
             "removed": [],
             "changes": [],
