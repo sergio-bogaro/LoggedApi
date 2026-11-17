@@ -171,6 +171,13 @@ class LibrarySyncSuggestion(Base):
     watched_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     candidate_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    candidates_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # auto = criado pelo sync; review = aprovado pelo usuário.
+    origin: Mapped[str] = mapped_column(
+        String(20), default="review", nullable=False
+    )
+    # Execução do sync que originou o item; usado pelo filtro "Último sync".
+    sync_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     source_refs_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     source_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 

@@ -57,6 +57,11 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "library_sync_settings": {
         "start_time": "TEXT NOT NULL DEFAULT '00:00'",
     },
+    "library_sync_suggestions": {
+        "candidates_json": "TEXT",
+        "origin": "TEXT NOT NULL DEFAULT 'review'",
+        "sync_run_at": "DATETIME",
+    },
 }
 
 

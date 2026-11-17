@@ -127,8 +127,11 @@ class SyncSuggestion(_CamelModel):
     review: str | None = None
     watched_date: date | None = None
     candidate: ImportCandidate | None = None
+    candidates: list[ImportCandidate] = []
     source_url: str | None = None
     review_state: SyncSuggestionState = "pending"
+    origin: str = "review"
+    sync_run_at: datetime | None = None
     media_id: int | None = None
     error: str | None = None
     created_at: datetime | None = None
@@ -139,12 +142,16 @@ class SyncSuggestionCounts(_CamelModel):
     pending: int = 0
     approved: int = 0
     dismissed: int = 0
+    attention: int = 0
+    no_match: int = 0
+    last_sync: int = 0
 
 
 class SyncSuggestionsResponse(_CamelModel):
     items: list[SyncSuggestion]
     total: int
     counts: SyncSuggestionCounts
+    last_sync_at: datetime | None = None
 
 
 class SyncSuggestionsApprove(_CamelModel):

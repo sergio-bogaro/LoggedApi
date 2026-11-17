@@ -52,6 +52,7 @@ from services.library_sync.registry import get_provider, list_providers
 from services.library_sync.suggestions import (
     approve_suggestions,
     candidate_from_json,
+    candidates_from_json,
     pending_count,
     set_suggestion_candidate,
     set_suggestion_state,
@@ -212,8 +213,11 @@ def _suggestion_response(suggestion: LibrarySyncSuggestion) -> SyncSuggestion:
         review=suggestion.review,
         watched_date=suggestion.watched_date,
         candidate=candidate_from_json(suggestion.candidate_json),
+        candidates=candidates_from_json(suggestion.candidates_json),
         source_url=suggestion.source_url,
         review_state=suggestion.review_state,
+        origin=suggestion.origin,
+        sync_run_at=suggestion.sync_run_at,
         media_id=suggestion.media_id,
         error=suggestion.error,
         created_at=suggestion.created_at,
@@ -246,19 +250,35 @@ def list_integrations(user_id: int, db: Session = Depends(get_db)):
 @router.get("/suggestions", response_model=SyncSuggestionsResponse)
 def list_suggestions(
     user_id: int,
-    state: Literal["pending", "approved", "dismissed"] = "pending",
+    state: Literal["pending", "approved", "dismissed", "all"] = "pending",
     provider: str | None = None,
+    last_sync: bool = False,
     offset: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
-    """Títulos encontrados pelo sync que aguardam revisão."""
-    conditions = [
-        LibrarySyncSuggestion.user_id == user_id,
-        LibrarySyncSuggestion.review_state == state,
-    ]
+    """Títulos encontrados pelo sync que aguardam revisão ou já foram importados."""
+    base = [LibrarySyncSuggestion.user_id == user_id]
     if provider:
-        conditions.append(LibrarySyncSuggestion.provider == provider)
+        base.append(LibrarySyncSuggestion.provider == provider)
+
+    last_run = db.execute(
+        select(func.max(LibrarySyncSuggestion.sync_run_at)).where(*base)
+    ).scalar_one_or_none()
+
+    conditions = list(base)
+    if last_sync:
+        if last_run is None:
+            conditions.append(LibrarySyncSuggestion.id == -1)
+        else:
+            conditions.extend(
+                [
+                    LibrarySyncSuggestion.review_state == "approved",
+                    LibrarySyncSuggestion.sync_run_at == last_run,
+                ]
+            )
+    elif state != "all":
+        conditions.append(LibrarySyncSuggestion.review_state == state)
 
     total = (
         db.execute(
@@ -274,9 +294,8 @@ def list_suggestions(
             select(LibrarySyncSuggestion)
             .where(*conditions)
             .order_by(
-                LibrarySyncSuggestion.provider,
-                LibrarySyncSuggestion.title,
-                LibrarySyncSuggestion.id,
+                LibrarySyncSuggestion.updated_at.desc(),
+                LibrarySyncSuggestion.id.desc(),
             )
             .offset(max(int(offset), 0))
             .limit(page)
@@ -289,6 +308,7 @@ def list_suggestions(
         items=[_suggestion_response(item) for item in items],
         total=total,
         counts=SyncSuggestionCounts(**counts),
+        last_sync_at=last_run,
     )
 
 

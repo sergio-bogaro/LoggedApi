@@ -676,6 +676,7 @@ class SuwayomiTests(unittest.TestCase):
 
         from database import SessionLocal
         from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.library_sync import LibrarySyncSuggestion
         from models.media import Media
         from models.suwayomi import (
             SuwayomiAccount,
@@ -757,6 +758,19 @@ class SuwayomiTests(unittest.TestCase):
             self.assertIsNotNone(link.last_match_attempt_at)
             self.assertEqual(summary["created"], 1)
             self.assertIn("Unknown Manga", summary["pendingResolved"])
+            suggestion = (
+                db.query(LibrarySyncSuggestion)
+                .filter_by(
+                    user_id=user_id,
+                    provider="suwayomi",
+                    source_id="999",
+                )
+                .one()
+            )
+            self.assertEqual(suggestion.review_state, "approved")
+            self.assertEqual(suggestion.origin, "auto")
+            self.assertIsNotNone(suggestion.sync_run_at)
+            self.assertEqual(suggestion.media_id, media.id)
         finally:
             db.close()
 
@@ -1050,6 +1064,117 @@ class SuwayomiTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_suggestion_history_and_last_sync_filter(self) -> None:
+        from datetime import datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.library_sync import LibrarySyncSuggestion
+        from services.library_sync.suggestions import (
+            candidate_to_json,
+            candidates_to_json,
+        )
+        from schemas.import_schemas import ImportCandidate
+
+        user_id = self._user()
+        candidate = ImportCandidate(
+            provider="anilist",
+            external_id="777001",
+            media_type=MediaTypeEnum.MANGA,
+            title="History Manga",
+            score=0.8,
+        )
+        db = SessionLocal()
+        try:
+            db.add_all(
+                [
+                    LibrarySyncSuggestion(
+                        user_id=user_id,
+                        provider="suwayomi",
+                        source_id="9001",
+                        media_type=MediaTypeEnum.MANGA,
+                        title="Old Auto",
+                        source_status="finished",
+                        action="finished",
+                        target_status=MediaStatusEnum.FINISHED,
+                        review_state="approved",
+                        origin="auto",
+                        sync_run_at=datetime(2026, 1, 1, 0, 0),
+                    ),
+                    LibrarySyncSuggestion(
+                        user_id=user_id,
+                        provider="suwayomi",
+                        source_id="9002",
+                        media_type=MediaTypeEnum.MANGA,
+                        title="Old Review",
+                        source_status="finished",
+                        action="finished",
+                        target_status=MediaStatusEnum.FINISHED,
+                        review_state="approved",
+                        origin="review",
+                        sync_run_at=datetime(2026, 1, 1, 0, 0),
+                    ),
+                    LibrarySyncSuggestion(
+                        user_id=user_id,
+                        provider="suwayomi",
+                        source_id="9003",
+                        media_type=MediaTypeEnum.MANGA,
+                        title="Latest Auto",
+                        source_status="in_progress",
+                        action="in_progress",
+                        target_status=MediaStatusEnum.IN_PROGRESS,
+                        review_state="approved",
+                        origin="auto",
+                        candidate_json=candidate_to_json(candidate),
+                        candidates_json=candidates_to_json([candidate]),
+                        sync_run_at=datetime(2026, 1, 2, 0, 0),
+                    ),
+                    LibrarySyncSuggestion(
+                        user_id=user_id,
+                        provider="suwayomi",
+                        source_id="9004",
+                        media_type=MediaTypeEnum.MANGA,
+                        title="Pending Candidate",
+                        source_status="in_progress",
+                        action="in_progress",
+                        target_status=MediaStatusEnum.IN_PROGRESS,
+                        review_state="pending",
+                        candidate_json=candidate_to_json(candidate),
+                        candidates_json=candidates_to_json([candidate]),
+                        sync_run_at=datetime(2026, 1, 2, 0, 0),
+                    ),
+                ]
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        approved = self.client.get(
+            f"/api/integrations/suggestions?user_id={user_id}&state=approved"
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+        body = approved.json()
+        self.assertEqual(body["total"], 3)
+        self.assertEqual(body["counts"]["approved"], 3)
+        self.assertEqual(body["counts"]["lastSync"], 1)
+        self.assertEqual(body["counts"]["attention"], 1)
+
+        latest = self.client.get(
+            f"/api/integrations/suggestions?user_id={user_id}&last_sync=true"
+        )
+        self.assertEqual(latest.status_code, 200, latest.text)
+        latest_body = latest.json()
+        self.assertEqual(latest_body["total"], 1)
+        self.assertEqual(latest_body["items"][0]["title"], "Latest Auto")
+        self.assertEqual(latest_body["items"][0]["origin"], "auto")
+        self.assertEqual(len(latest_body["items"][0]["candidates"]), 1)
+
+        everything = self.client.get(
+            f"/api/integrations/suggestions?user_id={user_id}&state=all"
+        )
+        self.assertEqual(everything.status_code, 200, everything.text)
+        self.assertEqual(everything.json()["total"], 4)
+
     def test_suggestion_candidate_endpoint(self) -> None:
         from database import SessionLocal
         from models.enums import MediaTypeEnum
@@ -1093,6 +1218,8 @@ class SuwayomiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertEqual(body["candidate"]["externalId"], "999001")
+        self.assertEqual(len(body["candidates"]), 1)
+        self.assertEqual(body["candidates"][0]["externalId"], "999001")
         self.assertIsNone(body["error"])
 
     def test_letterboxd_rss_item_fields(self) -> None:
@@ -2627,10 +2754,16 @@ class LibrarySyncTests(unittest.TestCase):
             log = db.query(MediaLog).filter_by(media_id=media.id).one()
             self.assertEqual(log.date, date(2026, 11, 1))
             self.assertEqual(log.status, MediaStatusEnum.FINISHED)
-            self.assertEqual(
-                db.query(LibrarySyncSuggestion).filter_by(user_id=user_id).count(),
-                0,
+            suggestion = (
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id)
+                .one()
             )
+            self.assertEqual(suggestion.review_state, "approved")
+            self.assertEqual(suggestion.origin, "auto")
+            self.assertEqual(suggestion.media_id, media.id)
+            self.assertIsNotNone(suggestion.sync_run_at)
+            self.assertIsNotNone(suggestion.candidates_json)
         finally:
             db.close()
 
@@ -3160,11 +3293,11 @@ class LibrarySyncTests(unittest.TestCase):
 
         calls = {"generic": [], "suwayomi": 0}
 
-        def fake_sync(user_id_arg, provider_id):
+        def fake_sync(user_id_arg, provider_id, _run_at=None):
             calls["generic"].append(provider_id)
             return {"status": "ok", "created": 1}
 
-        def fake_suwayomi(user_id_arg):
+        def fake_suwayomi(user_id_arg, _run_at=None):
             calls["suwayomi"] += 1
             return {"status": "ok", "created": 2}
 

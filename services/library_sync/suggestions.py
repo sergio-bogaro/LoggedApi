@@ -56,6 +56,28 @@ def candidate_from_json(value: str | None) -> ImportCandidate | None:
         return None
 
 
+def candidates_to_json(candidates: list[ImportCandidate] | None) -> str:
+    return json.dumps(
+        [candidate.model_dump(mode="json") for candidate in candidates or []],
+        ensure_ascii=False,
+    )
+
+
+def candidates_from_json(value: str | None) -> list[ImportCandidate]:
+    data = _loads(value, [])
+    if not isinstance(data, list):
+        return []
+    result: list[ImportCandidate] = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            result.append(ImportCandidate.model_validate(entry))
+        except ValueError:
+            continue
+    return result
+
+
 def suggestion_key(suggestion: LibrarySyncSuggestion) -> str:
     return f"{suggestion.provider}:{suggestion.source_id}"
 
@@ -116,6 +138,8 @@ def stage_suggestion_values(
     watched_date: date | None = None,
     source_url: str | None = None,
     refs: dict[str, str] | None = None,
+    candidates: list[ImportCandidate] | None = None,
+    sync_run_at: datetime | None = None,
 ) -> LibrarySyncSuggestion:
     """Cria ou atualiza uma sugestão pendente de qualquer provedor."""
     suggestion = suggestions.get(source_id)
@@ -148,6 +172,10 @@ def stage_suggestion_values(
     suggestion.watched_date = watched_date
     suggestion.source_url = source_url
     suggestion.source_refs_json = json.dumps(refs or {}, ensure_ascii=False)
+    if candidates is not None:
+        suggestion.candidates_json = candidates_to_json(candidates)
+    if sync_run_at is not None:
+        suggestion.sync_run_at = sync_run_at
     if candidate is not None:
         suggestion.candidate_json = candidate_to_json(candidate)
         suggestion.error = error
@@ -168,6 +196,8 @@ def stage_suggestion(
     source_label: str,
     candidate: ImportCandidate | None,
     error: str | None,
+    candidates: list[ImportCandidate] | None = None,
+    sync_run_at: datetime | None = None,
 ) -> LibrarySyncSuggestion:
     """Cria ou atualiza uma sugestão pendente para o item genérico."""
     return stage_suggestion_values(
@@ -190,7 +220,74 @@ def stage_suggestion(
         watched_date=item.watched_at,
         source_url=item.source_url,
         refs=suggestion_refs(connection, item),
+        candidates=candidates,
+        sync_run_at=sync_run_at,
     )
+
+
+def record_applied_suggestion(
+    db: Session,
+    suggestions: dict[str, LibrarySyncSuggestion],
+    *,
+    user_id: int,
+    provider: str,
+    source_id: str,
+    media_id: int,
+    media_type: MediaTypeEnum,
+    title: str,
+    source_status: str,
+    source_label: str,
+    action: str,
+    target_status: MediaStatusEnum | None,
+    candidate: ImportCandidate | None,
+    candidates: list[ImportCandidate] | None = None,
+    origin: str = "auto",
+    year: int | None = None,
+    rating: float | None = None,
+    review: str | None = None,
+    watched_date: date | None = None,
+    source_url: str | None = None,
+    refs: dict[str, str] | None = None,
+    sync_run_at: datetime | None = None,
+) -> LibrarySyncSuggestion:
+    """Registra no histórico um item que já entrou na biblioteca."""
+    suggestion = suggestions.get(source_id)
+    if suggestion is None:
+        suggestion = LibrarySyncSuggestion(
+            user_id=user_id,
+            provider=provider,
+            source_id=source_id,
+            media_type=media_type,
+            title=title,
+            source_status=source_status,
+            review_state="approved",
+        )
+        db.add(suggestion)
+        suggestions[source_id] = suggestion
+
+    suggestion.media_type = media_type
+    suggestion.title = title or suggestion.title
+    suggestion.year = year
+    suggestion.source_status = source_status
+    suggestion.source_label = source_label
+    suggestion.action = action
+    suggestion.target_status = target_status
+    suggestion.rating = rating
+    suggestion.review = review
+    suggestion.watched_date = watched_date
+    suggestion.source_url = source_url
+    suggestion.source_refs_json = json.dumps(refs or {}, ensure_ascii=False)
+    suggestion.candidates_json = candidates_to_json(candidates)
+    if candidate is not None:
+        suggestion.candidate_json = candidate_to_json(candidate)
+    suggestion.review_state = "approved"
+    suggestion.origin = origin
+    suggestion.sync_run_at = sync_run_at
+    suggestion.media_id = media_id
+    suggestion.error = None
+    suggestion.decided_at = utcnow()
+    db.flush()
+    return suggestion
 
 
 def candidate_for_suggestion(
@@ -330,6 +427,7 @@ def approve_suggestions(
             continue
 
         suggestion.review_state = "approved"
+        suggestion.origin = "review"
         suggestion.error = None
         suggestion.decided_at = utcnow()
         if suggestion.provider == "suwayomi":
@@ -420,6 +518,14 @@ def set_suggestion_candidate(
         raise ValueError("O match escolhido é de outro tipo de mídia.")
 
     suggestion.candidate_json = candidate_to_json(candidate)
+    existing = candidates_from_json(suggestion.candidates_json)
+    if not any(
+        item.external_id == candidate.external_id
+        and item.provider == candidate.provider
+        for item in existing
+    ):
+        existing.insert(0, candidate)
+    suggestion.candidates_json = candidates_to_json(existing)
     suggestion.error = None
     suggestion.decided_at = None
     db.commit()
@@ -454,4 +560,48 @@ def suggestion_counts(
     counts = {state: 0 for state in _REVIEW_STATES}
     for state, count in db.execute(query).all():
         counts[state] = count
+
+    base = [LibrarySyncSuggestion.user_id == user_id]
+    if provider:
+        base.append(LibrarySyncSuggestion.provider == provider)
+
+    attention = db.execute(
+        select(func.count())
+        .select_from(LibrarySyncSuggestion)
+        .where(
+            *base,
+            LibrarySyncSuggestion.review_state == "pending",
+            LibrarySyncSuggestion.candidate_json.is_not(None),
+        )
+    ).scalar() or 0
+    no_match = db.execute(
+        select(func.count())
+        .select_from(LibrarySyncSuggestion)
+        .where(
+            *base,
+            LibrarySyncSuggestion.review_state == "pending",
+            LibrarySyncSuggestion.candidate_json.is_(None),
+        )
+    ).scalar() or 0
+    last_run = db.execute(
+        select(func.max(LibrarySyncSuggestion.sync_run_at)).where(*base)
+    ).scalar_one_or_none()
+    last_sync = 0
+    if last_run is not None:
+        last_sync = (
+            db.execute(
+                select(func.count())
+                .select_from(LibrarySyncSuggestion)
+                .where(
+                    *base,
+                    LibrarySyncSuggestion.review_state == "approved",
+                    LibrarySyncSuggestion.sync_run_at == last_run,
+                )
+            ).scalar()
+            or 0
+        )
+
+    counts["attention"] = attention
+    counts["no_match"] = no_match
+    counts["last_sync"] = last_sync
     return counts

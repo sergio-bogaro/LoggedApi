@@ -38,7 +38,9 @@ from services.library_sync.registry import get_provider
 from services.library_sync.suggestions import (
     load_suggestions,
     pending_count,
+    record_applied_suggestion,
     stage_suggestion,
+    suggestion_refs,
 )
 
 _STATUS_ACTIONS = {status.value for status in MediaStatusEnum}
@@ -193,12 +195,16 @@ def _add_media_log(
 
 class LibrarySyncEngine:
     async def sync(
-        self, db: Session, connection: LibraryConnection
+        self,
+        db: Session,
+        connection: LibraryConnection,
+        run_at: datetime | None = None,
     ) -> dict:
+        run_at = run_at or utcnow()
         provider = get_provider(connection.provider)
         summary = self._empty_summary()
         summary["provider"] = connection.provider
-        summary["startedAt"] = utcnow().isoformat()
+        summary["startedAt"] = run_at.isoformat()
         connection.last_sync_status = "syncing"
         db.commit()
 
@@ -259,6 +265,7 @@ class LibrarySyncEngine:
                     baseline,
                     baseline_missing,
                     summary,
+                    run_at,
                 )
             except Exception as exc:  # noqa: BLE001 — um item não derruba o sync
                 summary["errors"].append(f"{item.title}: {exc}")
@@ -312,6 +319,7 @@ class LibrarySyncEngine:
         baseline: bool,
         baseline_missing: set[str],
         summary: dict,
+        run_at: datetime,
     ) -> None:
         status_def = next(
             (value for value in snapshot.statuses if value.key == item.status), None
@@ -394,6 +402,7 @@ class LibrarySyncEngine:
                 target_status,
                 status_def.label if status_def else item.status,
                 summary,
+                run_at,
             )
             if media is None:
                 if created_link:
@@ -558,7 +567,13 @@ class LibrarySyncEngine:
         db: Session,
         connection: LibraryConnection,
         item: SourceItem,
-    ) -> tuple[Media | None, ImportCandidate | None, str | None, str | None]:
+    ) -> tuple[
+        Media | None,
+        ImportCandidate | None,
+        list[ImportCandidate],
+        str | None,
+        str | None,
+    ]:
         try:
             response = await matcher.match(
                 db,
@@ -580,20 +595,32 @@ class LibrarySyncEngine:
             )
             result = response.results[0] if response.results else None
         except Exception as exc:  # noqa: BLE001 — metadata indisponível
-            return None, None, str(exc), None
+            return None, None, [], str(exc), None
 
         if result is None:
-            return None, None, "O matcher não retornou resultado.", None
+            return None, None, [], "O matcher não retornou resultado.", None
 
         if result.status == "already_in_library" and result.existing_media_id:
             media = _get_media(db, result.existing_media_id)
             if media is not None:
-                return media, result.match, result.error, result.status
+                return (
+                    media,
+                    result.match,
+                    result.candidates,
+                    result.error,
+                    result.status,
+                )
 
         candidate = result.match
         if candidate is None and result.candidates:
             candidate = result.candidates[0]
-        return None, candidate, result.error, result.status
+        return (
+            None,
+            candidate,
+            result.candidates,
+            result.error,
+            result.status,
+        )
 
     async def _resolve_review_item(
         self,
@@ -610,6 +637,7 @@ class LibrarySyncEngine:
         target_status: MediaStatusEnum | None,
         source_label: str,
         summary: dict,
+        run_at: datetime,
     ) -> Media | None:
         """Cria direto em match exato; caso contrário, alimenta a revisão."""
         if suggestion is not None and suggestion.review_state == "pending":
@@ -623,6 +651,7 @@ class LibrarySyncEngine:
                 source_label=source_label,
                 candidate=None,
                 error=None,
+                sync_run_at=run_at,
             )
             return None
 
@@ -631,8 +660,8 @@ class LibrarySyncEngine:
             suggestion.review_state = "pending"
             suggestion.decided_at = None
 
-        media, candidate, error, match_status = await self._match_review_item(
-            db, connection, item
+        media, candidate, candidates, error, match_status = (
+            await self._match_review_item(db, connection, item)
         )
         if media is not None:
             return media
@@ -647,6 +676,30 @@ class LibrarySyncEngine:
                 (item.media_type, normalize_title(media.title)), media
             )
             summary["created"] += 1
+            record_applied_suggestion(
+                db,
+                suggestions,
+                user_id=connection.user_id,
+                provider=connection.provider,
+                source_id=item.source_id,
+                media_id=media.id,
+                media_type=item.media_type,
+                title=item.title,
+                source_status=item.status,
+                source_label=source_label,
+                action=action,
+                target_status=target_status,
+                candidate=candidate,
+                candidates=candidates or [candidate],
+                origin="auto",
+                year=item.year,
+                rating=item.rating,
+                review=item.review,
+                watched_date=item.watched_at,
+                source_url=item.source_url,
+                refs=suggestion_refs(connection, item),
+                sync_run_at=run_at,
+            )
             return media
 
         if suggestion is None:
@@ -665,6 +718,8 @@ class LibrarySyncEngine:
             source_label=source_label,
             candidate=candidate,
             error=error,
+            candidates=candidates,
+            sync_run_at=run_at,
         )
         return None
 
@@ -811,7 +866,9 @@ def _normalize_default(action: str) -> tuple[str, MediaStatusEnum | None]:
 engine = LibrarySyncEngine()
 
 
-def sync_user(user_id: int, provider: str) -> dict:
+def sync_user(
+    user_id: int, provider: str, run_at: datetime | None = None
+) -> dict:
     if not _SYNC_LOCK.acquire(blocking=False):
         raise ValueError("Já existe uma sincronização em andamento. Tente novamente.")
     db = SessionLocal()
@@ -824,7 +881,7 @@ def sync_user(user_id: int, provider: str) -> dict:
         ).scalar_one_or_none()
         if connection is None:
             raise ValueError("Conexão não configurada.")
-        summary = asyncio.run(engine.sync(db, connection))
+        summary = asyncio.run(engine.sync(db, connection, run_at))
         return summary
     except Exception as exc:  # noqa: BLE001 — reportado no último sync
         db.rollback()

@@ -25,6 +25,7 @@ from services.importer.matcher import matcher
 from services.importer.text import normalize_title, search_title
 from services.library_sync.suggestions import (
     load_suggestions,
+    record_applied_suggestion,
     stage_suggestion_values,
 )
 from services.suwayomi.categories import (
@@ -268,7 +269,9 @@ def _stage_review_suggestion(
     action: str,
     status: MediaStatusEnum | None,
     candidate: ImportCandidate | None,
+    candidates: list[ImportCandidate] | None,
     error: str | None,
+    sync_run_at: datetime,
     summary: dict,
 ) -> LibrarySyncSuggestion:
     source_id = str(link.suwayomi_manga_id)
@@ -301,6 +304,8 @@ def _stage_review_suggestion(
         watched_date=watched_date,
         source_url=real_url or None,
         refs=refs,
+        candidates=candidates,
+        sync_run_at=sync_run_at,
     )
     if not already_exists:
         summary["reviewStaged"] += 1
@@ -321,6 +326,56 @@ def _approve_suggestion(
     suggestion.decided_at = utcnow()
 
 
+def _record_created_suggestion(
+    db: Session,
+    suggestions: dict[str, LibrarySyncSuggestion],
+    *,
+    user_id: int,
+    link: SuwayomiMangaLink,
+    manga: dict,
+    title: str,
+    action: str,
+    status: MediaStatusEnum | None,
+    candidate: ImportCandidate,
+    candidates: list[ImportCandidate] | None,
+    media: Media,
+    sync_run_at: datetime,
+) -> None:
+    source_id = str(link.suwayomi_manga_id)
+    real_url = (manga.get("realUrl") or manga.get("url") or "").strip()
+    refs = {"suwayomiId": source_id}
+    if real_url:
+        refs["suwayomiUrl"] = real_url
+
+    watched_date: date | None = None
+    if status is not None:
+        in_library_at, last_read_at = _manga_dates(manga)
+        moment = last_read_at or in_library_at or utcnow()
+        watched_date = moment.date()
+
+    record_applied_suggestion(
+        db,
+        suggestions,
+        user_id=user_id,
+        provider="suwayomi",
+        source_id=source_id,
+        media_id=media.id,
+        media_type=MediaTypeEnum.MANGA,
+        title=title,
+        source_status=_suggestion_action(action, status),
+        source_label=_suggestion_action(action, status),
+        action=_suggestion_action(action, status),
+        target_status=status,
+        candidate=candidate,
+        candidates=candidates or [candidate],
+        origin="auto",
+        watched_date=watched_date,
+        source_url=real_url or None,
+        refs=refs,
+        sync_run_at=sync_run_at,
+    )
+
+
 def _match_error(result: ImportMatchResult) -> str:
     if result.error:
         return result.error
@@ -334,7 +389,7 @@ class SuwayomiSyncService:
         self._running: set[int] = set()
         self._lock = threading.Lock()
 
-    def sync_user(self, user_id: int) -> dict:
+    def sync_user(self, user_id: int, run_at: datetime | None = None) -> dict:
         """Executa o sync em uma thread própria (abre sessão e event loop)."""
         with self._lock:
             if user_id in self._running:
@@ -349,15 +404,20 @@ class SuwayomiSyncService:
                 ).scalar_one_or_none()
                 if account is None:
                     raise ValueError("O Suwayomi ainda não foi configurado.")
-                return asyncio.run(self._sync(db, account))
+                return asyncio.run(self._sync(db, account, run_at))
             finally:
                 db.close()
         finally:
             with self._lock:
                 self._running.discard(user_id)
 
-    async def _sync(self, db: Session, account: SuwayomiAccount) -> dict:
-        started = utcnow()
+    async def _sync(
+        self,
+        db: Session,
+        account: SuwayomiAccount,
+        run_at: datetime | None = None,
+    ) -> dict:
+        started = run_at or utcnow()
         summary = self._empty_summary(started)
 
         client = SuwayomiClient(
@@ -366,7 +426,7 @@ class SuwayomiSyncService:
         try:
             categories = await client.get_categories()
             library = await client.get_library()
-            await self._run(db, account, categories, library, summary)
+            await self._run(db, account, categories, library, summary, started)
             status = "partial" if summary["unmatched"] or summary["errors"] else "ok"
         except Exception as exc:  # noqa: BLE001 — reportado na tela
             db.rollback()
@@ -399,7 +459,9 @@ class SuwayomiSyncService:
         categories: list[dict],
         library: list[dict],
         summary: dict,
+        run_at: datetime | None = None,
     ) -> None:
+        run_at = run_at or utcnow()
         user_id = account.user_id
         mappings = _load_mappings(db, user_id)
         if not mappings:
@@ -495,6 +557,8 @@ class SuwayomiSyncService:
                 summary["datedItems"] += 1
 
             if link is None:
+                created_candidate: ImportCandidate | None = None
+                created_candidates: list[ImportCandidate] | None = None
                 media = existing_by_title.get(normalize_title(title))
                 if media is None:
                     try:
@@ -515,6 +579,8 @@ class SuwayomiSyncService:
                             status if action == ACTION_STATUS else None,
                             account.base_url,
                         )
+                        created_candidate = result.match
+                        created_candidates = result.candidates
                         media_by_id[media.id] = media
                         existing_by_title[normalize_title(media.title)] = media
                         summary["created"] += 1
@@ -546,7 +612,13 @@ class SuwayomiSyncService:
                                 if result.status == "ambiguous"
                                 else None
                             ),
+                            candidates=(
+                                result.candidates
+                                if result.status == "ambiguous"
+                                else None
+                            ),
                             error=error,
+                            sync_run_at=run_at,
                             summary=summary,
                         )
                         self._append_unmatched(summary, title, error)
@@ -564,6 +636,21 @@ class SuwayomiSyncService:
                 if media is not None:
                     existing_by_title.setdefault(normalize_title(media.title), media)
                     _approve_suggestion(suggestions, suwayomi_id, media)
+                    if created_candidate is not None:
+                        _record_created_suggestion(
+                            db,
+                            suggestions,
+                            user_id=user_id,
+                            link=link,
+                            manga=manga,
+                            title=title,
+                            action=action,
+                            status=status,
+                            candidate=created_candidate,
+                            candidates=created_candidates,
+                            media=media,
+                            sync_run_at=run_at,
+                        )
 
             if link.media_id is None:
                 link.last_seen_at = now
@@ -581,6 +668,7 @@ class SuwayomiSyncService:
                     media_by_id,
                     suggestions,
                     summary,
+                    run_at,
                 )
                 if not resolved:
                     self._append_unmatched(
@@ -675,6 +763,7 @@ class SuwayomiSyncService:
         media_by_id: dict[int, Media],
         suggestions: dict[str, LibrarySyncSuggestion],
         summary: dict,
+        run_at: datetime,
     ) -> bool:
         """Tenta resolver um link que ficou pendente em syncs anteriores.
 
@@ -714,10 +803,12 @@ class SuwayomiSyncService:
                     action=action,
                     status=status,
                     candidate=None,
+                    candidates=None,
                     error=(
                         link.match_error
                         or "Aguardando novo match no AniList; busque um match."
                     ),
+                    sync_run_at=run_at,
                     summary=summary,
                 )
                 return False
@@ -749,6 +840,20 @@ class SuwayomiSyncService:
                 media_by_id[media.id] = media
                 existing_by_title[normalize_title(media.title)] = media
                 summary["created"] += 1
+                _record_created_suggestion(
+                    db,
+                    suggestions,
+                    user_id=user_id,
+                    link=link,
+                    manga=manga,
+                    title=title,
+                    action=action,
+                    status=status,
+                    candidate=result.match,
+                    candidates=result.candidates,
+                    media=media,
+                    sync_run_at=run_at,
+                )
             else:
                 error = _match_error(result)
                 link.match_error = error
@@ -764,7 +869,13 @@ class SuwayomiSyncService:
                     candidate=(
                         result.match if result.status == "ambiguous" else None
                     ),
+                    candidates=(
+                        result.candidates
+                        if result.status == "ambiguous"
+                        else None
+                    ),
                     error=error,
+                    sync_run_at=run_at,
                     summary=summary,
                 )
                 return False
@@ -781,7 +892,9 @@ class SuwayomiSyncService:
                 action=action,
                 status=status,
                 candidate=None,
+                candidates=None,
                 error=link.match_error,
+                sync_run_at=run_at,
                 summary=summary,
             )
             return False

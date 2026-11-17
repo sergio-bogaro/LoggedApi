@@ -191,10 +191,11 @@ def sync_all_for_user(user_id: int) -> dict:
     try:
         settings = get_settings(db, user_id)
         results: list[dict] = []
+        run_at = utcnow()
 
         for provider_id in included_provider_ids(db, user_id):
             try:
-                summary = sync_user(user_id, provider_id)
+                summary = sync_user(user_id, provider_id, run_at)
                 results.append(
                     {
                         "provider": provider_id,
@@ -213,7 +214,7 @@ def sync_all_for_user(user_id: int) -> dict:
 
         if suwayomi_included(db, user_id):
             try:
-                summary = suwayomi_sync.sync_user(user_id)
+                summary = suwayomi_sync.sync_user(user_id, run_at)
                 results.append(
                     {
                         "provider": "suwayomi",
