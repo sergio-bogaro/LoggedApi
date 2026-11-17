@@ -17,6 +17,7 @@ from database import SessionLocal
 from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.media import Media
 from models.media_list_item import MediaListItem
+from models.media_log import MediaLog
 from models.suwayomi import SuwayomiAccount, SuwayomiCategoryMapping, SuwayomiMangaLink
 from schemas.import_schemas import ImportCandidate
 from services.importer.matcher import matcher
@@ -43,6 +44,78 @@ def _to_datetime(value: date | datetime | None) -> datetime | None:
     if isinstance(value, datetime):
         return value
     return datetime.combine(value, time.min)
+
+
+def _from_unix(value: object) -> datetime | None:
+    """Converte o timestamp Unix (segundos) do Suwayomi para UTC naive."""
+    try:
+        timestamp = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    if timestamp <= 0:
+        return None
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(tzinfo=None)
+
+
+def _manga_dates(manga: dict) -> tuple[datetime | None, datetime | None]:
+    """Devolve (entrada na biblioteca, última leitura)."""
+    in_library = _from_unix(manga.get("inLibraryAt"))
+    last_read = None
+    for key in ("lastReadChapter", "latestReadChapter"):
+        chapter = manga.get(key) or {}
+        last_read = _from_unix(chapter.get("lastReadAt"))
+        if last_read is not None:
+            break
+    return in_library, last_read
+
+
+def _has_log(db: Session, media_id: int, day: date) -> bool:
+    return (
+        db.execute(
+            select(MediaLog.id).where(
+                MediaLog.media_id == media_id,
+                MediaLog.date == day,
+            )
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
+def _add_media_log(
+    db: Session,
+    user_id: int,
+    media: Media,
+    status: MediaStatusEnum | None,
+    in_library_at: datetime | None,
+    last_read_at: datetime | None,
+    summary: dict,
+) -> None:
+    if status is None:
+        return
+
+    ended = status in (MediaStatusEnum.FINISHED, MediaStatusEnum.DROPPED)
+    moment = last_read_at or (in_library_at if ended else None)
+    if moment is None:
+        return
+    day = moment.date()
+    if _has_log(db, media.id, day):
+        return
+
+    start = in_library_at
+    end = moment if ended else None
+    if start is not None and end is not None and start > end:
+        start = end
+    db.add(
+        MediaLog(
+            user_id=user_id,
+            media_id=media.id,
+            date=day,
+            status=status,
+            start_date=start,
+            end_date=end,
+        )
+    )
+    summary["logsCreated"] += 1
 
 
 def _load_mappings(db: Session, user_id: int) -> dict[int, SuwayomiCategoryMapping]:
@@ -82,6 +155,7 @@ def _add_to_backlog(
     media_id: int,
     link: SuwayomiMangaLink,
     summary: dict,
+    date_log: datetime | None = None,
 ) -> None:
     if _find_backlog_item(db, user_id, media_id) is not None:
         return
@@ -91,7 +165,7 @@ def _add_to_backlog(
             media_type=MediaTypeEnum.MANGA,
             media_id=media_id,
             list_type="backlog",
-            date_log=utcnow(),
+            date_log=date_log or utcnow(),
         )
     )
     link.backlog_owned = True
@@ -152,6 +226,7 @@ def _apply_action(
     action: str,
     status: MediaStatusEnum | None,
     summary: dict,
+    in_library_at: datetime | None = None,
 ) -> None:
     if action == ACTION_STATUS and status is not None:
         if media.status != status:
@@ -165,7 +240,7 @@ def _apply_action(
         # o usuário não tenha trocado o status manualmente.
         if link.last_status is not None and media.status == link.last_status:
             media.status = None
-        _add_to_backlog(db, user_id, media.id, link, summary)
+        _add_to_backlog(db, user_id, media.id, link, summary, in_library_at)
 
 
 class SuwayomiSyncService:
@@ -308,6 +383,10 @@ class SuwayomiSyncService:
                         link.title = title
                 continue
 
+            in_library_at, last_read_at = _manga_dates(manga)
+            if in_library_at is not None or last_read_at is not None:
+                summary["datedItems"] += 1
+
             if link is None:
                 media = existing_by_title.get(normalize_title(title))
                 if media is None:
@@ -403,7 +482,14 @@ class SuwayomiSyncService:
             target_status = status if action == ACTION_STATUS else None
             if (link.last_action, link.last_status) != (action, target_status):
                 _apply_action(
-                    db, user_id, media, link, action, status, summary
+                    db,
+                    user_id,
+                    media,
+                    link,
+                    action,
+                    status,
+                    summary,
+                    in_library_at,
                 )
                 previous = (
                     link.last_status.value
@@ -419,6 +505,17 @@ class SuwayomiSyncService:
                 )
                 link.last_action = action
                 link.last_status = target_status
+
+            if action == ACTION_STATUS and status is not None:
+                _add_media_log(
+                    db,
+                    user_id,
+                    media,
+                    status,
+                    in_library_at,
+                    last_read_at,
+                    summary,
+                )
 
             link.last_seen_at = now
             link.title = title
@@ -526,6 +623,8 @@ class SuwayomiSyncService:
             "statusUpdated": 0,
             "backlogAdded": 0,
             "backlogRemoved": 0,
+            "logsCreated": 0,
+            "datedItems": 0,
             "unmatched": [],
             "removed": [],
             "changes": [],

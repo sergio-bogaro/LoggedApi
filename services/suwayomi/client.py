@@ -20,6 +20,9 @@ query ($first: Int, $offset: Int) {
       realUrl
       url
       status
+      inLibraryAt
+      lastReadChapter { id name chapterNumber lastReadAt }
+      latestReadChapter { id name chapterNumber lastReadAt }
       categories {
         totalCount
         nodes { id name }

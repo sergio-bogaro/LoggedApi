@@ -7,11 +7,13 @@ ainda não existem no Logged. A categoria define o status e/ou o backlog.
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models.enums import MediaTypeEnum
+from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.media import Media
 from models.suwayomi import SuwayomiAccount, SuwayomiCategoryMapping
+from datetime import datetime, timezone
 from schemas.import_schemas import (
     ImportEntry,
+    ImportLogEntry,
     ImportPreviewCounts,
     ImportPreviewResponse,
 )
@@ -19,6 +21,27 @@ from services.importer.providers.base import ImportProvider
 from services.importer.text import normalize_title, search_title
 from services.suwayomi.categories import ACTION_BACKLOG, ACTION_STATUS, resolve_action
 from services.suwayomi.client import SuwayomiClient, normalize_base_url
+
+
+def _from_unix(value: object) -> datetime | None:
+    try:
+        timestamp = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    if timestamp <= 0:
+        return None
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(tzinfo=None)
+
+
+def _manga_dates(manga: dict) -> tuple[datetime | None, datetime | None]:
+    in_library = _from_unix(manga.get("inLibraryAt"))
+    last_read = None
+    for key in ("lastReadChapter", "latestReadChapter"):
+        chapter = manga.get(key) or {}
+        last_read = _from_unix(chapter.get("lastReadAt"))
+        if last_read is not None:
+            break
+    return in_library, last_read
 
 
 class SuwayomiProvider(ImportProvider):
@@ -117,6 +140,29 @@ class SuwayomiProvider(ImportProvider):
             if cleaned and normalize_title(cleaned) != normalized:
                 refs["searchTitle"] = cleaned
 
+            in_library_at, last_read_at = _manga_dates(manga)
+            entry_status = status if action == ACTION_STATUS else None
+            logs: list[ImportLogEntry] = []
+            if entry_status is not None:
+                ended = entry_status in (
+                    MediaStatusEnum.FINISHED,
+                    MediaStatusEnum.DROPPED,
+                )
+                moment = last_read_at or (in_library_at if ended else None)
+                if moment is not None:
+                    start = in_library_at
+                    end = moment if ended else None
+                    if start is not None and end is not None and start > end:
+                        start = end
+                    logs.append(
+                        ImportLogEntry(
+                            date=moment.date(),
+                            start_date=start,
+                            end_date=end,
+                            status=entry_status,
+                        )
+                    )
+
             entries.append(
                 ImportEntry(
                     key=f"suwayomi:{manga_id}",
@@ -125,8 +171,14 @@ class SuwayomiProvider(ImportProvider):
                     overview=manga.get("description"),
                     source="suwayomi",
                     external_refs=refs,
-                    status=status if action == ACTION_STATUS else None,
+                    status=entry_status,
+                    logs=logs,
                     in_backlog=action == ACTION_BACKLOG,
+                    backlog_date=(
+                        in_library_at.date()
+                        if action == ACTION_BACKLOG and in_library_at is not None
+                        else None
+                    ),
                 )
             )
 
@@ -138,7 +190,7 @@ class SuwayomiProvider(ImportProvider):
 
         counts = ImportPreviewCounts(
             total=len(entries),
-            with_logs=0,
+            with_logs=sum(1 for entry in entries if entry.logs),
             rated=0,
             reviewed=0,
             backlog=sum(1 for entry in entries if entry.in_backlog),

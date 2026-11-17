@@ -1091,6 +1091,195 @@ class SuwayomiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 204)
 
+    def test_sync_records_read_and_library_dates(self) -> None:
+        from datetime import datetime, timezone
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum
+        from models.media import Media
+        from models.media_list_item import MediaListItem
+        from models.media_log import MediaLog
+        from models.suwayomi import (
+            SuwayomiAccount,
+            SuwayomiCategoryMapping,
+            SuwayomiMangaLink,
+        )
+        from services.suwayomi.sync import service
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            account = SuwayomiAccount(
+                user_id=user_id, base_url="http://suwayomi.test", enabled=False
+            )
+            db.add(account)
+            db.add_all(
+                [
+                    SuwayomiCategoryMapping(
+                        user_id=user_id,
+                        category_id=1,
+                        category_name="Reading",
+                        category_order=2,
+                        action="status",
+                        status=MediaStatusEnum.IN_PROGRESS,
+                    ),
+                    SuwayomiCategoryMapping(
+                        user_id=user_id,
+                        category_id=2,
+                        category_name="Plan To Read",
+                        category_order=3,
+                        action="backlog",
+                    ),
+                ]
+            )
+            reading = Media(
+                user_id=user_id,
+                external_id="reading-dated",
+                title="Reading Dated",
+                type=MediaTypeEnum.MANGA,
+            )
+            planned = Media(
+                user_id=user_id,
+                external_id="planned-dated",
+                title="Planned Dated",
+                type=MediaTypeEnum.MANGA,
+            )
+            db.add_all([reading, planned])
+            db.commit()
+            db.refresh(reading)
+            db.refresh(planned)
+
+            in_library = "1748018141"
+            last_read = "1748023530"
+            expected_start = datetime.fromtimestamp(
+                int(in_library), tz=timezone.utc
+            ).replace(tzinfo=None)
+            expected_read = datetime.fromtimestamp(
+                int(last_read), tz=timezone.utc
+            ).replace(tzinfo=None)
+            categories = [
+                {"id": 1, "name": "Reading", "order": 2, "default": False},
+                {"id": 2, "name": "Plan To Read", "order": 3, "default": False},
+            ]
+            library = [
+                {
+                    "id": 101,
+                    "title": "Reading Dated",
+                    "inLibraryAt": in_library,
+                    "lastReadChapter": {"lastReadAt": last_read},
+                    "categories": {"nodes": [{"id": 1}]},
+                },
+                {
+                    "id": 102,
+                    "title": "Planned Dated",
+                    "inLibraryAt": in_library,
+                    "categories": {"nodes": [{"id": 2}]},
+                },
+            ]
+
+            summary = service._empty_summary(datetime.now())
+            asyncio.run(service._run(db, account, categories, library, summary))
+            db.commit()
+
+            log = (
+                db.query(MediaLog)
+                .filter_by(user_id=user_id, media_id=reading.id)
+                .one()
+            )
+            self.assertEqual(log.date, expected_read.date())
+            self.assertEqual(log.status, MediaStatusEnum.IN_PROGRESS)
+            self.assertEqual(log.start_date, expected_start)
+            self.assertIsNone(log.end_date)
+            self.assertEqual(summary["logsCreated"], 1)
+            self.assertEqual(summary["datedItems"], 2)
+
+            backlog = (
+                db.query(MediaListItem)
+                .filter_by(user_id=user_id, media_id=planned.id, list_type="backlog")
+                .one()
+            )
+            self.assertEqual(backlog.date_log, expected_start)
+
+            summary = service._empty_summary(datetime.now())
+            asyncio.run(service._run(db, account, categories, library, summary))
+            db.commit()
+            self.assertEqual(
+                db.query(MediaLog)
+                .filter_by(user_id=user_id, media_id=reading.id)
+                .count(),
+                1,
+            )
+            self.assertEqual(summary["logsCreated"], 0)
+        finally:
+            db.close()
+
+    def test_provider_import_adds_log_dates(self) -> None:
+        from datetime import datetime, timezone
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum
+        from models.suwayomi import SuwayomiCategoryMapping
+        from services.importer.providers import suwayomi as provider_module
+        from services.importer.providers.suwayomi import SuwayomiProvider
+
+        user_id = self._user()
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args) -> None:
+                return None
+
+            async def get_categories(self):
+                return [
+                    {"id": 1, "name": "Reading", "order": 2, "default": False}
+                ]
+
+            async def get_library(self):
+                return [
+                    {
+                        "id": 201,
+                        "title": "Dated Import",
+                        "inLibraryAt": "1748018141",
+                        "lastReadChapter": {"lastReadAt": "1748023530"},
+                        "categories": {"nodes": [{"id": 1}]},
+                    }
+                ]
+
+        db = SessionLocal()
+        try:
+            db.add(
+                SuwayomiCategoryMapping(
+                    user_id=user_id,
+                    category_id=1,
+                    category_name="Reading",
+                    category_order=2,
+                    action="status",
+                    status=MediaStatusEnum.IN_PROGRESS,
+                )
+            )
+            db.commit()
+            with patch.object(provider_module, "SuwayomiClient", FakeClient):
+                preview = asyncio.run(
+                    SuwayomiProvider().parse_url(
+                        "http://suwayomi.test", MediaTypeEnum.MANGA, db, user_id
+                    )
+                )
+            entry = preview.entries[0]
+            self.assertEqual(preview.counts.with_logs, 1)
+            self.assertEqual(len(entry.logs), 1)
+            expected_read = datetime.fromtimestamp(
+                1748023530, tz=timezone.utc
+            ).replace(tzinfo=None)
+            self.assertEqual(entry.logs[0].date, expected_read.date())
+            self.assertEqual(entry.logs[0].status, MediaStatusEnum.IN_PROGRESS)
+        finally:
+            db.close()
+
 
 class ImportJobTests(unittest.TestCase):
     @classmethod
