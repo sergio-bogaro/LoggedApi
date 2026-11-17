@@ -170,6 +170,7 @@ class SyncSuggestionCountResponse(_CamelModel):
 class GlobalSyncSettings(_CamelModel):
     enabled: bool = False
     updates_per_day: int = 4
+    start_time: str = "00:00"
     last_sync_at: datetime | None = None
     last_sync_status: str | None = None
     last_sync_summary: dict | None = None
@@ -180,6 +181,7 @@ class GlobalSyncConfigPayload(_CamelModel):
     user_id: int
     enabled: bool = False
     updates_per_day: int = Field(4, ge=1, le=24)
+    start_time: str = Field("00:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 class GlobalSyncPayload(_CamelModel):

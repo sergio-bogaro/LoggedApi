@@ -2725,20 +2725,95 @@ class LibrarySyncTests(unittest.TestCase):
         body = response.json()
         self.assertFalse(body["enabled"])
         self.assertEqual(body["updatesPerDay"], 4)
+        self.assertEqual(body["startTime"], "00:00")
 
         response = self.client.put(
             "/api/integrations/global",
-            json={"userId": user_id, "enabled": True, "updatesPerDay": 8},
+            json={
+                "userId": user_id,
+                "enabled": True,
+                "updatesPerDay": 8,
+                "startTime": "09:30",
+            },
         )
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertTrue(body["enabled"])
         self.assertEqual(body["updatesPerDay"], 8)
+        self.assertEqual(body["startTime"], "09:30")
         self.assertIsNotNone(body["nextSyncAt"])
 
         response = self.client.get(f"/api/integrations/global?user_id={user_id}")
         self.assertTrue(response.json()["enabled"])
         self.assertEqual(response.json()["updatesPerDay"], 8)
+        self.assertEqual(response.json()["startTime"], "09:30")
+
+    def test_global_sync_schedule_is_anchored_to_start_time(self) -> None:
+        from datetime import datetime
+
+        from services.library_sync.orchestrator import (
+            next_slot_local,
+            normalize_start_time,
+            schedule_slots,
+        )
+
+        self.assertEqual(
+            schedule_slots("00:00", 4),
+            ["00:00", "06:00", "12:00", "18:00"],
+        )
+        self.assertEqual(
+            schedule_slots("00:00", 3),
+            ["00:00", "08:00", "16:00"],
+        )
+        self.assertEqual(
+            schedule_slots("00:00", 5),
+            ["00:00", "04:48", "09:36", "14:24", "19:12"],
+        )
+        self.assertEqual(normalize_start_time("9:05"), "00:00")
+        self.assertEqual(normalize_start_time("09:05"), "09:05")
+
+        self.assertEqual(
+            next_slot_local(datetime(2026, 1, 1, 0, 0, 1), "00:00", 4),
+            datetime(2026, 1, 1, 6, 0),
+        )
+        self.assertEqual(
+            next_slot_local(datetime(2026, 1, 1, 23, 0), "00:00", 4),
+            datetime(2026, 1, 2, 0, 0),
+        )
+        self.assertEqual(
+            next_slot_local(datetime(2026, 1, 1, 8, 0), "09:00", 4),
+            datetime(2026, 1, 1, 9, 0),
+        )
+        self.assertEqual(
+            next_slot_local(datetime(2026, 1, 1, 22, 0), "09:00", 4),
+            datetime(2026, 1, 2, 3, 0),
+        )
+        self.assertEqual(
+            next_slot_local(datetime(2026, 1, 1, 9, 0, 1), "09:00", 1),
+            datetime(2026, 1, 2, 9, 0),
+        )
+
+        from database import SessionLocal
+        from models.library_sync import LibrarySyncSettings
+        from services.library_sync.orchestrator import next_due_at
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            settings = LibrarySyncSettings(
+                user_id=user_id,
+                enabled=True,
+                updates_per_day=4,
+                start_time="00:00",
+                next_sync_at=None,
+            )
+            db.add(settings)
+            db.commit()
+            self.assertIsNotNone(next_due_at(db))
+            db.delete(settings)
+            db.commit()
+        finally:
+            db.close()
 
     def test_sync_all_endpoint_returns_aggregate(self) -> None:
         from unittest.mock import patch

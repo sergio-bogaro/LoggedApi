@@ -46,6 +46,7 @@ from services.library_sync.orchestrator import (
     sync_all_for_user,
 )
 from services.library_sync.providers.base import LibraryProvider
+from services.library_sync.scheduler import scheduler as library_sync_scheduler
 from services.library_sync.registry import get_provider, list_providers
 from services.library_sync.suggestions import (
     approve_suggestions,
@@ -156,6 +157,7 @@ def _global_settings_response(settings) -> GlobalSyncSettings:
     return GlobalSyncSettings(
         enabled=settings.enabled,
         updates_per_day=settings.updates_per_day,
+        start_time=settings.start_time or "00:00",
         last_sync_at=settings.last_sync_at,
         last_sync_status=settings.last_sync_status,
         last_sync_summary=_decode_summary(settings.last_sync_summary),
@@ -170,12 +172,13 @@ def get_global_config(user_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/global", response_model=GlobalSyncSettings)
-def save_global_config(
+async def save_global_config(
     data: GlobalSyncConfigPayload, db: Session = Depends(get_db)
 ):
     settings = save_global_settings(
-        db, data.user_id, data.enabled, data.updates_per_day
+        db, data.user_id, data.enabled, data.updates_per_day, data.start_time
     )
+    library_sync_scheduler.wake()
     return _global_settings_response(settings)
 
 

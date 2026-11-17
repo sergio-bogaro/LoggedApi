@@ -210,6 +210,10 @@ class LibrarySyncSettings(Base):
     )
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     updates_per_day: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
+    # Horário inicial local do servidor, no formato HH:MM.
+    start_time: Mapped[str] = mapped_column(
+        String(5), default="00:00", nullable=False
+    )
 
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # ok | partial | failed

@@ -1,9 +1,10 @@
 """Orquestração do sync geral de todas as integrações de um usuário."""
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
@@ -15,13 +16,72 @@ from services.library_sync.registry import list_providers
 from services.suwayomi.sync import service as suwayomi_sync
 
 
+_START_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+_DEFAULT_START_TIME = "00:00"
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def interval(updates_per_day: int) -> timedelta:
-    per_day = min(max(int(updates_per_day or 1), 1), 24)
-    return timedelta(hours=24 / per_day)
+def _clamp_updates(updates_per_day: int) -> int:
+    return min(max(int(updates_per_day or 1), 1), 24)
+
+
+def normalize_start_time(value: str | None) -> str:
+    """Normaliza ``HH:MM``; valores inválidos caem em 00:00."""
+    match = _START_TIME_RE.match((value or "").strip())
+    if match is None:
+        return _DEFAULT_START_TIME
+    return f"{int(match.group(1)):02d}:{int(match.group(2)):02d}"
+
+
+def next_slot_local(
+    now_local: datetime, start_time: str, updates_per_day: int
+) -> datetime:
+    """Próximo slot na hora local do servidor.
+
+    A grade é ancorada no horário inicial e repete a cada 24h. Ex.: 00:00
+    com 4x/dia gera 00:00, 06:00, 12:00 e 18:00.
+    """
+    per_day = _clamp_updates(updates_per_day)
+    hour, minute = (
+        int(part) for part in normalize_start_time(start_time).split(":")
+    )
+    anchor = now_local.replace(
+        hour=hour, minute=minute, second=0, microsecond=0
+    )
+    step = timedelta(seconds=86400 / per_day)
+    if now_local < anchor:
+        return anchor
+    elapsed = (now_local - anchor).total_seconds()
+    steps = int(elapsed // step.total_seconds()) + 1
+    return anchor + step * steps
+
+
+def next_sync_at(
+    start_time: str,
+    updates_per_day: int,
+    now_local: datetime | None = None,
+) -> datetime:
+    """Próximo slot convertido para UTC ingênuo, como o restante do banco."""
+    local = now_local or datetime.now()
+    slot = next_slot_local(local, start_time, updates_per_day)
+    return slot.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def schedule_slots(start_time: str, updates_per_day: int) -> list[str]:
+    """Horários do dia para exibição/teste, no formato HH:MM."""
+    per_day = _clamp_updates(updates_per_day)
+    hour, minute = (
+        int(part) for part in normalize_start_time(start_time).split(":")
+    )
+    step = (24 * 60) / per_day
+    slots: list[str] = []
+    for index in range(per_day):
+        total = round(hour * 60 + minute + index * step) % (24 * 60)
+        slots.append(f"{total // 60:02d}:{total % 60:02d}")
+    return slots
 
 
 def get_settings(db: Session, user_id: int) -> LibrarySyncSettings:
@@ -33,6 +93,7 @@ def get_settings(db: Session, user_id: int) -> LibrarySyncSettings:
             user_id=user_id,
             enabled=False,
             updates_per_day=4,
+            start_time=_DEFAULT_START_TIME,
         )
         db.add(settings)
         db.commit()
@@ -41,12 +102,21 @@ def get_settings(db: Session, user_id: int) -> LibrarySyncSettings:
 
 
 def save_settings(
-    db: Session, user_id: int, enabled: bool, updates_per_day: int
+    db: Session,
+    user_id: int,
+    enabled: bool,
+    updates_per_day: int,
+    start_time: str = _DEFAULT_START_TIME,
 ) -> LibrarySyncSettings:
     settings = get_settings(db, user_id)
     settings.enabled = bool(enabled)
-    settings.updates_per_day = min(max(int(updates_per_day or 1), 1), 24)
-    settings.next_sync_at = utcnow() if settings.enabled else None
+    settings.updates_per_day = _clamp_updates(updates_per_day)
+    settings.start_time = normalize_start_time(start_time)
+    settings.next_sync_at = (
+        next_sync_at(settings.start_time, settings.updates_per_day)
+        if settings.enabled
+        else None
+    )
     db.commit()
     db.refresh(settings)
     return settings
@@ -177,7 +247,9 @@ def sync_all_for_user(user_id: int) -> dict:
             ensure_ascii=False,
         )
         settings.next_sync_at = (
-            now + interval(settings.updates_per_day) if settings.enabled else None
+            next_sync_at(settings.start_time, settings.updates_per_day)
+            if settings.enabled
+            else None
         )
         db.commit()
         return {
@@ -207,3 +279,26 @@ def due_user_ids(db: Session, now: datetime | None = None) -> list[int]:
         .scalars()
         .all()
     )
+
+
+def next_due_at(db: Session) -> datetime | None:
+    """Menor ``next_sync_at`` entre os usuários com sync automático ligado.
+
+    ``next_sync_at`` nulo significa "vencido agora" (ex.: configuração antiga
+    recém-migrada), então devolve o instante atual para o scheduler não dormir.
+    """
+    has_unscheduled = db.execute(
+        select(LibrarySyncSettings.id)
+        .where(
+            LibrarySyncSettings.enabled.is_(True),
+            LibrarySyncSettings.next_sync_at.is_(None),
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if has_unscheduled is not None:
+        return utcnow()
+    return db.execute(
+        select(func.min(LibrarySyncSettings.next_sync_at)).where(
+            LibrarySyncSettings.enabled.is_(True)
+        )
+    ).scalar_one_or_none()

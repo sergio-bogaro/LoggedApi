@@ -54,6 +54,9 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "match_attempts": "INTEGER NOT NULL DEFAULT 0",
         "ignored": "BOOLEAN NOT NULL DEFAULT 0",
     },
+    "library_sync_settings": {
+        "start_time": "TEXT NOT NULL DEFAULT '00:00'",
+    },
 }
 
 
@@ -76,6 +79,16 @@ def ensure_columns() -> None:
                         text(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {ddl}')
                     )
                     print(f"Migration: added column {table}.{name}")
+                    # A grade fixa passa a valer no próximo startup. Deixar o
+                    # next_sync_at antigo (calculado por intervalo) atrasaria a
+                    # primeira execução para um horário fora da nova grade.
+                    if table == "library_sync_settings" and name == "start_time":
+                        conn.execute(
+                            text(
+                                "UPDATE library_sync_settings "
+                                "SET next_sync_at = NULL WHERE enabled = 1"
+                            )
+                        )
 
 
 # Tabelas de funcionalidades descontinuadas. São derrubadas no startup de forma
