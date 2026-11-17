@@ -4,9 +4,26 @@ Usado pelo importador de livros: ISBN → edição → obra (work). O `external_
 do Logged para livros é o id da obra (ex.: `OL12345W`).
 """
 
+import asyncio
+import time
+
 import httpx
 
 _OPENLIBRARY_URL = "https://openlibrary.org"
+_OPENLIBRARY_INTERVAL = 0.35
+_openlibrary_lock = asyncio.Lock()
+_openlibrary_next = 0.0
+
+
+async def _throttle() -> None:
+    global _openlibrary_next
+    async with _openlibrary_lock:
+        now = time.monotonic()
+        slot = max(now, _openlibrary_next)
+        _openlibrary_next = slot + _OPENLIBRARY_INTERVAL
+    delay = slot - time.monotonic()
+    if delay > 0:
+        await asyncio.sleep(delay)
 
 
 def work_id_from_key(key: str | None) -> str:
@@ -31,11 +48,20 @@ class OpenLibraryService:
         return self._client
 
     async def _get(self, path: str, params: dict | None = None) -> dict | None:
-        try:
-            resp = await self._get_client().get(f"{_OPENLIBRARY_URL}{path}", params=params)
-        except httpx.HTTPError as exc:
-            raise ValueError(f"Falha ao contatar a OpenLibrary: {exc}") from exc
+        resp = None
+        for attempt in range(3):
+            await _throttle()
+            try:
+                resp = await self._get_client().get(
+                    f"{_OPENLIBRARY_URL}{path}", params=params
+                )
+            except httpx.HTTPError as exc:
+                raise ValueError(f"Falha ao contatar a OpenLibrary: {exc}") from exc
+            if resp.status_code < 500 and resp.status_code != 429:
+                break
+            await asyncio.sleep(1.0 * (attempt + 1))
 
+        assert resp is not None
         if resp.status_code == 404:
             return None
         if resp.status_code >= 400:

@@ -170,6 +170,10 @@ class ImportJobWorker:
             preview = await provider.parse_url(
                 job.source_url or "", job.media_type, db, job.user_id
             )
+        elif job.input_type == "connection":
+            preview = await provider.parse_connection(
+                db, job.user_id, job.media_type
+            )
         else:
             preview = await provider.parse_username(
                 job.source_username or "", job.media_type

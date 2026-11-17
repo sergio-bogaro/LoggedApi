@@ -15,6 +15,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TMP_DIR.as_posix()}/test.db"
 os.environ["UPLOAD_DIR"] = str(_TMP_DIR / "uploads")
 # Os testes controlam o worker manualmente; o loop global fica desligado.
 os.environ["IMPORT_JOB_WORKER_ENABLED"] = "false"
+os.environ["LIBRARY_SYNC_SCHEDULER_ENABLED"] = "false"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -833,6 +834,263 @@ class SuwayomiTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_letterboxd_rss_item_fields(self) -> None:
+        from services.library_sync.providers.letterboxd import LetterboxdProvider
+        from defusedxml.ElementTree import fromstring
+
+        xml = b"""<?xml version='1.0' encoding='utf-8'?>
+        <rss version="2.0" xmlns:letterboxd="https://letterboxd.com"
+             xmlns:tmdb="https://themoviedb.org">
+          <channel><item>
+            <title>Dune: Part Two, 2024 - \xe2\x98\x85\xe2\x98\x85\xe2\x98\x85\xe2\x98\x85</title>
+            <link>https://letterboxd.com/user/film/dune-part-two-2024/</link>
+            <guid>letterboxd-review-123</guid>
+            <pubDate>Mon, 01 Jan 2024 12:00:00 +0000</pubDate>
+            <description>&lt;p&gt;&lt;img src="poster.jpg"/&gt;Great film.&lt;/p&gt;</description>
+            <letterboxd:filmTitle>Dune: Part Two</letterboxd:filmTitle>
+            <letterboxd:filmYear>2024</letterboxd:filmYear>
+            <letterboxd:memberRating>4.0</letterboxd:memberRating>
+            <letterboxd:watchedDate>2024-01-01</letterboxd:watchedDate>
+            <tmdb:movieId>693134</tmdb:movieId>
+          </item></channel>
+        </rss>"""
+        item = LetterboxdProvider()._to_item(fromstring(xml).find(".//item"))
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertEqual(item.title, "Dune: Part Two")
+        self.assertEqual(item.external_id, "693134")
+        self.assertEqual(item.rating, 8.0)
+        self.assertEqual(item.review, "Great film.")
+        self.assertEqual(item.year, 2024)
+
+    def test_connection_import_preview_uses_mapping(self) -> None:
+        import asyncio
+        import json
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.library_sync import LibraryConnection
+        from services.importer.providers.library_sync import LibrarySyncImportProvider
+        from services.library_sync.providers.base import (
+            LibraryProvider,
+            SourceItem,
+            SourceSnapshot,
+            SourceStatus,
+        )
+
+        class FakeProvider(LibraryProvider):
+            id = "kitsu"
+            label = "Fake"
+            media_types = [MediaTypeEnum.ANIME]
+            auth_kind = "username"
+
+            def statuses(self):
+                return [
+                    SourceStatus("completed", "Completo", "finished", MediaStatusEnum.FINISHED),
+                    SourceStatus("planned", "Planejado", "backlog", None),
+                ]
+
+            async def fetch(self, connection, cursor):
+                return SourceSnapshot(
+                    items=[
+                        SourceItem(
+                            source_id="1",
+                            media_type=MediaTypeEnum.ANIME,
+                            title="Anime A",
+                            status="completed",
+                            external_id="100",
+                            rating=9.0,
+                            review="Bom",
+                            external_refs={"anilistId": "100"},
+                        ),
+                        SourceItem(
+                            source_id="2",
+                            media_type=MediaTypeEnum.ANIME,
+                            title="Anime B",
+                            status="planned",
+                            external_id="200",
+                        ),
+                    ],
+                    statuses=self.statuses(),
+                )
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            db.add(
+                LibraryConnection(
+                    user_id=user_id,
+                    provider="kitsu",
+                    enabled=True,
+                    updates_per_day=4,
+                    auth_json=json.dumps({"username": "x"}),
+                    cursor_json="{}",
+                )
+            )
+            db.commit()
+            provider = LibrarySyncImportProvider("kitsu")
+            provider.sync_provider = FakeProvider()
+            preview = asyncio.run(provider.parse_connection(db, user_id, None))
+            self.assertEqual(len(preview.entries), 2)
+            by_key = {entry.key: entry for entry in preview.entries}
+            self.assertEqual(by_key["kitsu:1"].status, MediaStatusEnum.FINISHED)
+            self.assertFalse(by_key["kitsu:1"].in_backlog)
+            self.assertIsNone(by_key["kitsu:2"].status)
+            self.assertTrue(by_key["kitsu:2"].in_backlog)
+            self.assertEqual(
+                by_key["kitsu:2"].external_refs["syncProvider"], "kitsu"
+            )
+        finally:
+            db.close()
+
+    def test_commit_registers_library_sync_link(self) -> None:
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.library_sync import LibrarySyncLink
+        from schemas.import_schemas import ImportCommitEntry, ImportCommitRequest
+        from services.importer.commit import committer
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            response = committer.commit(
+                db,
+                ImportCommitRequest(
+                    user_id=user_id,
+                    entries=[
+                        ImportCommitEntry(
+                            key="kitsu:9",
+                            media_type=MediaTypeEnum.ANIME,
+                            external_id="999",
+                            title="Linked",
+                            status=MediaStatusEnum.FINISHED,
+                            source="kitsu",
+                            external_refs={
+                                "syncProvider": "kitsu",
+                                "syncSourceId": "kitsu:9",
+                                "syncStatus": "completed",
+                            },
+                        )
+                    ],
+                ),
+            )
+            self.assertEqual(response.imported, 1)
+            link = (
+                db.query(LibrarySyncLink)
+                .filter_by(user_id=user_id, provider="kitsu", source_id="kitsu:9")
+                .one()
+            )
+            self.assertIsNotNone(link.media_id)
+            self.assertEqual(link.last_source_status, "completed")
+            self.assertEqual(link.last_action, "finished")
+        finally:
+            db.close()
+
+    def test_anilist_provider_parses_public_list(self) -> None:
+        import asyncio
+        import json
+        from unittest.mock import patch
+
+        from models.library_sync import LibraryConnection
+        from services.anilist_service import service as anilist_service
+        from services.library_sync.providers.anilist import AniListProvider
+
+        connection = LibraryConnection(
+            user_id=1,
+            provider="anilist",
+            auth_json=json.dumps({"username": "someone"}),
+        )
+        payload = {
+            "MediaListCollection": {
+                "lists": [
+                    {
+                        "entries": [
+                            {
+                                "status": "CURRENT",
+                                "score": 8.5,
+                                "notes": "nota",
+                                "updatedAt": "2026-01-01T00:00:00Z",
+                                "media": {
+                                    "id": 123,
+                                    "title": {"romaji": "Romaji", "english": "English"},
+                                    "coverImage": {"large": "cover.jpg"},
+                                    "description": "desc",
+                                    "startDate": {"year": 2020, "month": 4, "day": 2},
+                                },
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+
+        async def fake_query(_query, _variables):
+            return payload
+
+        with patch.object(anilist_service, "query", fake_query):
+            snapshot = asyncio.run(
+                AniListProvider().fetch(connection, {})
+            )
+        self.assertEqual(len(snapshot.items), 1)
+        item = snapshot.items[0]
+        self.assertEqual(item.external_id, "123")
+        self.assertEqual(item.title, "English")
+        self.assertEqual(item.status, "CURRENT")
+        self.assertEqual(item.rating, 8.5)
+        self.assertEqual(item.year, 2020)
+
+    def test_integration_api_config_and_mappings(self) -> None:
+        user_id = self._user()
+        response = self.client.get(f"/api/integrations?user_id={user_id}")
+        self.assertEqual(response.status_code, 200)
+        providers = {item["id"]: item for item in response.json()}
+        self.assertIn("anilist", providers)
+        self.assertIn("letterboxd", providers)
+        self.assertIn("trakt", providers)
+
+        response = self.client.put(
+            "/api/integrations/anilist/config",
+            json={
+                "userId": user_id,
+                "enabled": True,
+                "updatesPerDay": 6,
+                "username": "someone",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["connected"])
+        self.assertEqual(response.json()["updatesPerDay"], 6)
+
+        response = self.client.get(
+            f"/api/integrations/anilist/statuses?user_id={user_id}"
+        )
+        self.assertEqual(response.status_code, 200)
+        statuses = response.json()["statuses"]
+        self.assertEqual(len(statuses), 6)
+
+        response = self.client.put(
+            "/api/integrations/anilist/statuses",
+            json={
+                "userId": user_id,
+                "statuses": [
+                    {"sourceStatus": "PLANNING", "action": "finished"},
+                    {"sourceStatus": "CURRENT", "action": "ignore"},
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        by_key = {
+            item["sourceStatus"]: item["action"]
+            for item in response.json()["statuses"]
+        }
+        self.assertEqual(by_key["PLANNING"], "finished")
+        self.assertEqual(by_key["CURRENT"], "ignore")
+
+        response = self.client.delete(
+            f"/api/integrations/anilist?user_id={user_id}"
+        )
+        self.assertEqual(response.status_code, 204)
+
 
 class ImportJobTests(unittest.TestCase):
     @classmethod
@@ -1105,6 +1363,253 @@ class ImportJobTests(unittest.TestCase):
             self.assertEqual(job.progress_total, 1)
             self.assertEqual(job.progress_done, 1)
             self.assertFalse(FilePath(file_path).exists())
+        finally:
+            db.close()
+
+
+class LibrarySyncTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = TestClient(app, raise_server_exceptions=False)
+        cls.client.__enter__()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.client.__exit__(None, None, None)
+
+    def _user(self) -> int:
+        username = f"libsync_{uuid.uuid4().hex[:10]}"
+        response = self.client.post(
+            "/auth/register", json={"username": username, "password": "secret"}
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["id"]
+
+    def _provider(self, items):
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from services.library_sync.providers.base import (
+            LibraryProvider,
+            SourceSnapshot,
+            SourceStatus,
+        )
+
+        class FakeProvider(LibraryProvider):
+            id = "fake"
+            label = "Fake"
+            media_types = [MediaTypeEnum.MOVIES]
+            auth_kind = "username"
+
+            def statuses(self):
+                return [
+                    SourceStatus(
+                        "watched", "Assistido", "finished", MediaStatusEnum.FINISHED
+                    ),
+                    SourceStatus("watchlist", "Watchlist", "backlog", None),
+                ]
+
+            async def fetch(self, connection, cursor):
+                return SourceSnapshot(
+                    items=list(items),
+                    statuses=self.statuses(),
+                    cursor={"seen": True},
+                )
+
+        return FakeProvider()
+
+    def _connection(self, db, user_id):
+        import json
+
+        from models.library_sync import LibraryConnection
+
+        connection = LibraryConnection(
+            user_id=user_id,
+            provider="fake",
+            enabled=True,
+            updates_per_day=4,
+            auth_json=json.dumps({"username": "tester"}),
+            cursor_json="{}",
+        )
+        db.add(connection)
+        db.commit()
+        db.refresh(connection)
+        return connection
+
+    def test_baseline_links_existing_and_does_not_overwrite(self) -> None:
+        import asyncio
+        import json
+        from unittest.mock import patch
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.library_sync import LibrarySyncLink
+        from models.media import Media
+        from services.library_sync import engine as engine_module
+        from services.library_sync.providers.base import SourceItem
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            media = Media(
+                user_id=user_id,
+                external_id="tmdb-1",
+                title="Existing",
+                type=MediaTypeEnum.MOVIES,
+                status=MediaStatusEnum.DROPPED,
+            )
+            db.add(media)
+            db.commit()
+            db.refresh(media)
+            connection = self._connection(db, user_id)
+            provider = self._provider(
+                [
+                    SourceItem(
+                        source_id="s1",
+                        media_type=MediaTypeEnum.MOVIES,
+                        title="Existing",
+                        status="watched",
+                        external_id="tmdb-1",
+                        rating=8.0,
+                    ),
+                    SourceItem(
+                        source_id="s2",
+                        media_type=MediaTypeEnum.MOVIES,
+                        title="Missing",
+                        status="watchlist",
+                        external_id="tmdb-2",
+                    ),
+                ]
+            )
+            with patch.object(engine_module, "get_provider", return_value=provider):
+                summary = asyncio.run(engine_module.engine.sync(db, connection))
+            db.expire_all()
+            media = db.get(Media, media.id)
+            self.assertEqual(media.status, MediaStatusEnum.DROPPED)
+            self.assertEqual(media.rating, 8.0)
+            self.assertEqual(summary["missing"], 1)
+            self.assertEqual(summary["created"], 0)
+            self.assertTrue(summary["baseline"])
+            links = db.query(LibrarySyncLink).all()
+            self.assertEqual(len(links), 1)
+            self.assertEqual(links[0].source_id, "s1")
+            self.assertEqual(links[0].media_id, media.id)
+            self.assertIn(
+                "s2", json.loads(connection.cursor_json)["baseline_missing"]
+            )
+        finally:
+            db.close()
+
+    def test_new_item_created_backlog_and_status_change(self) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.media import Media
+        from models.media_list_item import MediaListItem
+        from services.library_sync import engine as engine_module
+        from services.library_sync.providers.base import SourceItem
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            connection = self._connection(db, user_id)
+            first = self._provider([])
+            with patch.object(engine_module, "get_provider", return_value=first):
+                asyncio.run(engine_module.engine.sync(db, connection))
+
+            item = SourceItem(
+                source_id="new-1",
+                media_type=MediaTypeEnum.MOVIES,
+                title="New One",
+                status="watchlist",
+                external_id="tmdb-3",
+            )
+            provider = self._provider([item])
+            with patch.object(engine_module, "get_provider", return_value=provider):
+                summary = asyncio.run(engine_module.engine.sync(db, connection))
+            db.expire_all()
+            media = (
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id="tmdb-3")
+                .one()
+            )
+            self.assertEqual(summary["created"], 1)
+            self.assertEqual(summary["backlogAdded"], 1)
+            self.assertIsNone(media.status)
+            self.assertEqual(
+                db.query(MediaListItem)
+                .filter_by(user_id=user_id, media_id=media.id, list_type="backlog")
+                .count(),
+                1,
+            )
+
+            item.status = "watched"
+            provider = self._provider([item])
+            with patch.object(engine_module, "get_provider", return_value=provider):
+                summary = asyncio.run(engine_module.engine.sync(db, connection))
+            db.expire_all()
+            media = db.get(Media, media.id)
+            self.assertEqual(media.status, MediaStatusEnum.FINISHED)
+            self.assertEqual(summary["statusUpdated"], 1)
+            self.assertEqual(summary["backlogRemoved"], 1)
+            self.assertEqual(
+                db.query(MediaListItem)
+                .filter_by(user_id=user_id, media_id=media.id)
+                .count(),
+                0,
+            )
+        finally:
+            db.close()
+
+    def test_manual_status_is_preserved_until_source_changes(self) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.media import Media
+        from services.library_sync import engine as engine_module
+        from services.library_sync.providers.base import SourceItem
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            connection = self._connection(db, user_id)
+            first = self._provider([])
+            with patch.object(engine_module, "get_provider", return_value=first):
+                asyncio.run(engine_module.engine.sync(db, connection))
+            item = SourceItem(
+                source_id="manual-1",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Manual",
+                status="watched",
+                external_id="tmdb-4",
+            )
+            provider = self._provider([item])
+            with patch.object(engine_module, "get_provider", return_value=provider):
+                asyncio.run(engine_module.engine.sync(db, connection))
+            media = (
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id="tmdb-4")
+                .one()
+            )
+            media.status = MediaStatusEnum.ON_HOLD
+            db.commit()
+
+            with patch.object(engine_module, "get_provider", return_value=provider):
+                summary = asyncio.run(engine_module.engine.sync(db, connection))
+            db.expire_all()
+            media = db.get(Media, media.id)
+            self.assertEqual(media.status, MediaStatusEnum.ON_HOLD)
+            self.assertEqual(summary["statusUpdated"], 0)
+
+            item.status = "watchlist"
+            provider = self._provider([item])
+            with patch.object(engine_module, "get_provider", return_value=provider):
+                asyncio.run(engine_module.engine.sync(db, connection))
+            db.expire_all()
+            media = db.get(Media, media.id)
+            self.assertEqual(media.status, MediaStatusEnum.ON_HOLD)
         finally:
             db.close()
 

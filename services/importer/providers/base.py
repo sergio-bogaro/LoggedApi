@@ -41,3 +41,8 @@ class ImportProvider:
         self, url: str, media_type: MediaTypeEnum | None, db, user_id: int
     ) -> ImportPreviewResponse:
         raise ValueError("Este provedor não aceita URL.")
+
+    async def parse_connection(
+        self, db, user_id: int, media_type: MediaTypeEnum | None
+    ) -> ImportPreviewResponse:
+        raise ValueError("Este provedor não aceita importação por conexão.")

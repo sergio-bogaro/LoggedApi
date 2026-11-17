@@ -221,6 +221,16 @@ class AniListService:
 
         raise ValueError("Falha ao contatar o AniList.")
 
+    async def query(self, query: str, variables: dict) -> dict:
+        """Executa uma query GraphQL arbitrária (usada pelo sync de biblioteca)."""
+        return await self._query(query, variables)
+
+    async def get_user(self, username: str) -> dict | None:
+        data = await self._query(
+            "query($name:String){ User(name:$name){ id name } }", {"name": username}
+        )
+        return data.get("User")
+
     async def get_user_list(self, username: str, media_type: str) -> dict:
         data = await self._query(
             _USER_LIST_QUERY, {"userName": username, "type": media_type}

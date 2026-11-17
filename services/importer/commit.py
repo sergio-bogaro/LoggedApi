@@ -1,3 +1,4 @@
+import json
 """Commit genérico de uma importação — serve qualquer tipo de mídia.
 
 Cria/atualiza `Media`, os `MediaLog` das sessões e o item de backlog, tudo em
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from models.enums import MediaStatusEnum
 from models.media import Media
+from models.library_sync import LibraryConnection, LibrarySyncLink
 from models.media_list_item import MediaListItem
 from models.media_log import MediaLog
 from models.suwayomi import SuwayomiMangaLink
@@ -187,6 +189,8 @@ class ImportCommitter:
 
         if entry.source == "suwayomi":
             self._register_suwayomi_link(db, user_id, media, entry, outcome)
+        if (entry.external_refs or {}).get("syncProvider"):
+            self._register_library_sync_link(db, user_id, media, entry, outcome)
 
         return outcome
 
@@ -240,6 +244,71 @@ class ImportCommitter:
 
         if outcome.backlog:
             link.backlog_owned = True
+
+    @staticmethod
+    def _register_library_sync_link(
+        db: Session,
+        user_id: int,
+        media: Media,
+        entry: ImportCommitEntry,
+        outcome: _CommitOutcome,
+    ) -> None:
+        refs = entry.external_refs or {}
+        provider = refs.get("syncProvider")
+        source_id = refs.get("syncSourceId")
+        if not provider or not source_id:
+            return
+        link = db.execute(
+            select(LibrarySyncLink).where(
+                LibrarySyncLink.user_id == user_id,
+                LibrarySyncLink.provider == provider,
+                LibrarySyncLink.source_id == source_id,
+            )
+        ).scalar_one_or_none()
+        if link is None:
+            link = LibrarySyncLink(
+                user_id=user_id,
+                provider=provider,
+                source_id=source_id,
+                title=entry.title,
+            )
+            db.add(link)
+        link.media_id = media.id
+        link.media_type = entry.media_type
+        link.title = entry.title
+        link.source_status = refs.get("syncStatus")
+        link.last_source_status = refs.get("syncStatus")
+        link.last_seen_at = datetime.now()
+        link.match_error = None
+        if entry.add_to_backlog:
+            link.last_action = "backlog"
+            link.last_status = None
+        elif entry.status is not None:
+            link.last_action = entry.status.value
+            link.last_status = entry.status
+        else:
+            link.last_action = "ignore"
+            link.last_status = None
+        if outcome.backlog:
+            link.backlog_owned = True
+
+        connection = db.execute(
+            select(LibraryConnection).where(
+                LibraryConnection.user_id == user_id,
+                LibraryConnection.provider == provider,
+            )
+        ).scalar_one_or_none()
+        if connection is not None:
+            try:
+                cursor = json.loads(connection.cursor_json or "{}")
+            except (TypeError, ValueError):
+                cursor = {}
+            missing = cursor.get("baseline_missing") or []
+            if source_id in missing:
+                cursor["baseline_missing"] = [
+                    value for value in missing if value != source_id
+                ]
+                connection.cursor_json = json.dumps(cursor, ensure_ascii=False)
 
     @staticmethod
     def _in_backlog(db: Session, user_id: int, media_id: int) -> bool:

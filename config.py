@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     # Worker de importações em background. Desligado em testes.
     import_job_worker_enabled: bool = True
 
+    # Credenciais de app para os sincronizadores de biblioteca.
+    trakt_client_id: str | None = None
+    trakt_client_secret: str | None = None
+    simkl_client_id: str | None = None
+    simkl_client_secret: str | None = None
+    mal_client_id: str | None = None
+
+    # Agendador dos sincronizadores. Desligado em testes.
+    library_sync_scheduler_enabled: bool = True
+    library_sync_request_timeout: float = 20.0
+
     @property
     def cors_origins_list(self) -> list[str]:
         return json.loads(self.cors_origins)

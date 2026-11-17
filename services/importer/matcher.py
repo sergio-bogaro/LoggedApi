@@ -341,6 +341,18 @@ class ImportMatcher:
         self, item: ImportMatchRequestItem
     ) -> list[ImportCandidate]:
         refs = item.external_refs or {}
+        work_id = refs.get("openlibraryId")
+        if work_id:
+            try:
+                work = await openlibrary_service.get_work(f"/works/{work_id}")
+            except ValueError:
+                work = None
+            if work:
+                return [
+                    self._openlibrary_candidate(
+                        work, f"/works/{work_id}", 1.0, item.overview
+                    )
+                ]
         isbn = refs.get("isbn13") or refs.get("isbn10")
         if isbn:
             candidate = await self._openlibrary_by_isbn(isbn, item.overview)

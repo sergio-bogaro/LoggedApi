@@ -2,11 +2,13 @@ import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from database import get_db
 from models.enums import MediaTypeEnum
+from models.library_sync import LibraryConnection
 from schemas.import_job import (
     ImportJobCommitRequest,
     ImportJobItemResponse,
@@ -31,6 +33,7 @@ from services.importer.registry import get_provider, list_providers
 from services.import_jobs.serializers import job_response
 from services.import_jobs.service import service as import_job_service
 from services.import_jobs.storage import save_import_file
+from services.library_sync.providers.base import LibraryProvider
 
 router = APIRouter(prefix="/api/import", tags=["Import"])
 
@@ -75,9 +78,11 @@ async def create_import_job(
     """Cria uma importação em background e devolve o job na fila."""
     provider = get_provider(provider_id)
     input_type = provider.input_type
-    selected_media_type = media_type or (
-        provider.media_types[0] if provider.media_types else None
-    )
+    selected_media_type = media_type
+    if selected_media_type is None and input_type != "connection":
+        selected_media_type = (
+            provider.media_types[0] if provider.media_types else None
+        )
 
     file_path = None
     file_name = None
@@ -91,6 +96,22 @@ async def create_import_job(
         elif input_type == "url":
             if not source_url or not source_url.strip():
                 raise ValueError("Informe a URL do servidor.")
+        elif input_type == "connection":
+            connection = db.execute(
+                select(LibraryConnection).where(
+                    LibraryConnection.user_id == user_id,
+                    LibraryConnection.provider == provider_id,
+                )
+            ).scalar_one_or_none()
+            auth = LibraryProvider.auth(connection) if connection else {}
+            if not (
+                str(auth.get("username") or "").strip()
+                or str(auth.get("token") or "").strip()
+                or str(auth.get("access_token") or "").strip()
+            ):
+                raise ValueError(
+                    f"Conecte sua conta do {provider.label} em Configurações > Integrações."
+                )
         else:
             if not username or not username.strip():
                 raise ValueError("Informe o username.")
@@ -208,6 +229,8 @@ async def parse_provider(
         return await run_in_threadpool(
             _parse_file_sync, provider, file.filename or "", raw
         )
+    if provider.input_type == "connection":
+        return await provider.parse_connection(db, user_id, media_type)
     if not username:
         raise ValueError("Informe o username.")
     return await provider.parse_username(username, media_type)

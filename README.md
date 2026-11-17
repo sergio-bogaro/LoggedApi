@@ -132,3 +132,38 @@ CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
 ## Observações finais
 - Você já confirmou que a instalação funcionou com `Python 3.12.12` — ótimo; agora basta ativar o venv e rodar `uvicorn`.
 - Se quiser, posso (a) iniciar o servidor aqui na sessão, (b) criar um script `make` ou `scripts/run.sh` para facilitar, ou (c) commitar o `README.md`. Diga qual prefere.
+
+## Sincronização de bibliotecas
+
+A página **Configurações → Integrações** permite conectar serviços externos e
+manter status/backlog sincronizados. A primeira sincronização é um baseline:
+ela vincula o que já existe e lista o que falta; o histórico em massa continua
+na página **Importar**, com revisão.
+
+Provedores:
+
+- **AniList** (username)
+- **MyAnimeList** (username + Client ID)
+- **Kitsu** (username)
+- **Trakt** (OAuth device)
+- **Simkl** (OAuth device)
+- **Letterboxd** (RSS do diário; histórico completo via CSV)
+- **Hardcover** (Personal Access Token)
+- **Open Library** (username)
+
+Variáveis de ambiente para os apps OAuth/Client ID:
+
+```env
+TRAKT_CLIENT_ID=
+TRAKT_CLIENT_SECRET=
+SIMKL_CLIENT_ID=
+SIMKL_CLIENT_SECRET=
+MAL_CLIENT_ID=
+```
+
+Trakt e Simkl usam o fluxo de device code: o app mostra um código e o usuário
+aprova no site. O token do Hardcover é criado nas configurações da conta do
+próprio Hardcover.
+
+A sincronização roda em background, uma conexão por vez. O intervalo é
+configurável de 1 a 24 vezes por dia.
