@@ -20,6 +20,7 @@ from services.library_sync.providers.base import (
 from services.library_sync.providers.common import (
     client,
     strip_html,
+    to_date,
     to_datetime,
     to_float,
     year_of,
@@ -34,15 +35,15 @@ _BROWSER_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124 Safari/537.36"
 )
-_MAX_SEEN = 800
-
-
 class LetterboxdProvider(LibraryProvider):
     id = "letterboxd"
     label = "Letterboxd"
     media_types = [MediaTypeEnum.MOVIES]
     auth_kind = "username"
     tracks_removals = False
+    # O RSS é pequeno (até 50 itens); revisar só o que não casar exatamente.
+    review_missing = True
+    creates_logs = True
 
     def statuses(self) -> list[SourceStatus]:
         return [
@@ -84,11 +85,11 @@ class LetterboxdProvider(LibraryProvider):
         except ET.ParseError as exc:
             raise ValueError("O feed do Letterboxd não pôde ser lido.") from exc
 
-        baseline_done = bool(connection.baseline_completed_at)
-        seen = set(cursor.get("seen_guids") or []) if baseline_done else set()
-        current_guids: list[str] = []
         items: dict[str, SourceItem] = {}
 
+        # O feed é sempre reprocessado por inteiro. Assim um título que estava
+        # pendente pode ser vinculado/criado quando a metadata estiver
+        # disponível, em vez de desaparecer no cursor de "já vistos".
         for element in root.findall(".//item"):
             guid = _text(element, "guid")
             if not guid or not (
@@ -96,22 +97,14 @@ class LetterboxdProvider(LibraryProvider):
                 or guid.startswith("letterboxd-review-")
             ):
                 continue
-            current_guids.append(guid)
-            if guid in seen:
-                continue
             item = self._to_item(element)
             if item is not None:
                 items[item.source_id] = item
 
-        merged = list(current_guids)
-        for guid in cursor.get("seen_guids") or []:
-            if guid not in merged:
-                merged.append(guid)
-        new_cursor = {"seen_guids": merged[-_MAX_SEEN:]}
         return SourceSnapshot(
             items=list(items.values()),
             statuses=self.statuses(),
-            cursor=new_cursor,
+            cursor={},
             full=False,
         )
 
@@ -131,7 +124,7 @@ class LetterboxdProvider(LibraryProvider):
         source_id = f"letterboxd:{tmdb_id or slug or title}"
         rating_raw = to_float(_ns_text(element, "letterboxd", "memberRating"))
         rating = round(rating_raw * 2.0, 1) if rating_raw and rating_raw > 0 else None
-        watched = _ns_text(element, "letterboxd", "watchedDate")
+        watched = to_date(_ns_text(element, "letterboxd", "watchedDate"))
         release_year = year_of(_ns_text(element, "letterboxd", "filmYear"))
         published = to_datetime(_text(element, "pubDate"))
         review = strip_html(_text(element, "description"))
@@ -151,6 +144,7 @@ class LetterboxdProvider(LibraryProvider):
             ),
             source_url=link or None,
             updated_at=published,
+            watched_at=watched,
         )
 
 

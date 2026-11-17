@@ -1,9 +1,10 @@
 import asyncio
 import json
 from datetime import timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -11,6 +12,7 @@ from models.library_sync import (
     LibraryConnection,
     LibraryStatusMapping,
     LibrarySyncLink,
+    LibrarySyncSuggestion,
 )
 from schemas.library_sync import (
     OAuthPollPayload,
@@ -22,12 +24,26 @@ from schemas.library_sync import (
     SyncStatusesResponse,
     SyncStatusesUpdate,
     SyncStatusOption,
+    SyncSuggestion,
+    SyncSuggestionCountResponse,
+    SyncSuggestionCounts,
+    SyncSuggestionsApprove,
+    SyncSuggestionsApproveResponse,
+    SyncSuggestionsResponse,
+    SyncSuggestionStateUpdate,
     SyncTestPayload,
     SyncTestResponse,
 )
 from services.library_sync.engine import engine as sync_engine, sync_user, utcnow
 from services.library_sync.providers.base import LibraryProvider
 from services.library_sync.registry import get_provider, list_providers
+from services.library_sync.suggestions import (
+    approve_suggestions,
+    candidate_from_json,
+    pending_count,
+    set_suggestion_state,
+    suggestion_counts,
+)
 
 router = APIRouter(prefix="/api/integrations", tags=["Integrações"])
 
@@ -74,7 +90,9 @@ def _account(connection: LibraryConnection | None) -> str | None:
 
 
 def _info(
-    provider: LibraryProvider, connection: LibraryConnection | None
+    provider: LibraryProvider,
+    connection: LibraryConnection | None,
+    pending_review: int = 0,
 ) -> SyncProviderInfo:
     auth = LibraryProvider.auth(connection) if connection else {}
     return SyncProviderInfo(
@@ -100,6 +118,7 @@ def _info(
             str(auth.get("token") or "").strip()
             or str(auth.get("access_token") or "").strip()
         ),
+        pending_review=pending_review,
     )
 
 
@@ -123,12 +142,134 @@ def _ensure_connection(
     return connection
 
 
+def _suggestion_response(suggestion: LibrarySyncSuggestion) -> SyncSuggestion:
+    return SyncSuggestion(
+        id=suggestion.id,
+        provider=suggestion.provider,
+        source_id=suggestion.source_id,
+        media_type=suggestion.media_type,
+        title=suggestion.title,
+        year=suggestion.year,
+        source_status=suggestion.source_status,
+        source_label=suggestion.source_label,
+        action=suggestion.action,
+        target_status=suggestion.target_status,
+        rating=suggestion.rating,
+        review=suggestion.review,
+        watched_date=suggestion.watched_date,
+        candidate=candidate_from_json(suggestion.candidate_json),
+        source_url=suggestion.source_url,
+        review_state=suggestion.review_state,
+        media_id=suggestion.media_id,
+        error=suggestion.error,
+        created_at=suggestion.created_at,
+        updated_at=suggestion.updated_at,
+    )
+
+
 @router.get("", response_model=list[SyncProviderInfo])
 def list_integrations(user_id: int, db: Session = Depends(get_db)):
+    counts = dict(
+        db.execute(
+            select(LibrarySyncSuggestion.provider, func.count())
+            .where(
+                LibrarySyncSuggestion.user_id == user_id,
+                LibrarySyncSuggestion.review_state == "pending",
+            )
+            .group_by(LibrarySyncSuggestion.provider)
+        ).all()
+    )
     return [
-        _info(provider, _get_connection(db, user_id, provider.id))
+        _info(
+            provider,
+            _get_connection(db, user_id, provider.id),
+            counts.get(provider.id, 0),
+        )
         for provider in list_providers()
     ]
+
+
+@router.get("/suggestions", response_model=SyncSuggestionsResponse)
+def list_suggestions(
+    user_id: int,
+    state: Literal["pending", "approved", "dismissed"] = "pending",
+    provider: str | None = None,
+    offset: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    """Títulos encontrados pelo sync que aguardam revisão."""
+    conditions = [
+        LibrarySyncSuggestion.user_id == user_id,
+        LibrarySyncSuggestion.review_state == state,
+    ]
+    if provider:
+        conditions.append(LibrarySyncSuggestion.provider == provider)
+
+    total = (
+        db.execute(
+            select(func.count())
+            .select_from(LibrarySyncSuggestion)
+            .where(*conditions)
+        ).scalar()
+        or 0
+    )
+    page = min(max(int(limit), 1), 200)
+    items = (
+        db.execute(
+            select(LibrarySyncSuggestion)
+            .where(*conditions)
+            .order_by(
+                LibrarySyncSuggestion.provider,
+                LibrarySyncSuggestion.title,
+                LibrarySyncSuggestion.id,
+            )
+            .offset(max(int(offset), 0))
+            .limit(page)
+        )
+        .scalars()
+        .all()
+    )
+    counts = suggestion_counts(db, user_id, provider)
+    return SyncSuggestionsResponse(
+        items=[_suggestion_response(item) for item in items],
+        total=total,
+        counts=SyncSuggestionCounts(**counts),
+    )
+
+
+@router.get("/suggestions/count", response_model=SyncSuggestionCountResponse)
+def count_suggestions(
+    user_id: int,
+    provider: str | None = None,
+    db: Session = Depends(get_db),
+):
+    return SyncSuggestionCountResponse(
+        pending=pending_count(db, user_id, provider)
+    )
+
+
+@router.post(
+    "/suggestions/approve", response_model=SyncSuggestionsApproveResponse
+)
+def approve_sync_suggestions(
+    data: SyncSuggestionsApprove, db: Session = Depends(get_db)
+):
+    """Cria as mídias selecionadas e remove as sugestões da fila."""
+    result = approve_suggestions(db, data.user_id, data.ids)
+    return SyncSuggestionsApproveResponse(**result)
+
+
+@router.patch("/suggestions/{suggestion_id}", response_model=SyncSuggestion)
+def update_sync_suggestion(
+    suggestion_id: int,
+    data: SyncSuggestionStateUpdate,
+    db: Session = Depends(get_db),
+):
+    suggestion = set_suggestion_state(
+        db, data.user_id, suggestion_id, data.state
+    )
+    return _suggestion_response(suggestion)
 
 
 @router.get("/{provider_id}", response_model=SyncProviderInfo)
@@ -136,7 +277,11 @@ def get_integration(
     provider_id: str, user_id: int, db: Session = Depends(get_db)
 ):
     provider = get_provider(provider_id)
-    return _info(provider, _get_connection(db, user_id, provider_id))
+    return _info(
+        provider,
+        _get_connection(db, user_id, provider_id),
+        pending_count(db, user_id, provider_id),
+    )
 
 
 @router.put("/{provider_id}/config", response_model=SyncProviderInfo)
@@ -171,7 +316,11 @@ def save_config(
 
     sync_engine._ensure_mappings(db, connection, provider)
     db.commit()
-    return _info(provider, connection)
+    return _info(
+        provider,
+        connection,
+        pending_count(db, data.user_id, provider_id),
+    )
 
 
 @router.get("/{provider_id}/statuses", response_model=SyncStatusesResponse)
@@ -384,6 +533,12 @@ def delete_integration(
         delete(LibraryStatusMapping).where(
             LibraryStatusMapping.user_id == user_id,
             LibraryStatusMapping.provider == provider_id,
+        )
+    )
+    db.execute(
+        delete(LibrarySyncSuggestion).where(
+            LibrarySyncSuggestion.user_id == user_id,
+            LibrarySyncSuggestion.provider == provider_id,
         )
     )
     db.execute(

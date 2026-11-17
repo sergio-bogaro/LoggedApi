@@ -1,6 +1,11 @@
 from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.import_job import ImportJob, ImportJobItem
-from models.library_sync import LibraryConnection, LibraryStatusMapping, LibrarySyncLink
+from models.library_sync import (
+    LibraryConnection,
+    LibraryStatusMapping,
+    LibrarySyncLink,
+    LibrarySyncSuggestion,
+)
 from models.media import Media
 from models.media_list_item import MediaListItem
 from models.media_log import MediaLog
@@ -18,6 +23,7 @@ __all__ = [
     "LibraryConnection",
     "LibraryStatusMapping",
     "LibrarySyncLink",
+    "LibrarySyncSuggestion",
     "Media",
     "MediaListItem",
     "MediaLog",

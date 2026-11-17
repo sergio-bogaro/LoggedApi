@@ -5,11 +5,13 @@ são genéricas: cada provedor tem uma conexão, um mapeamento de status e links
 para as mídias do Logged.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -134,4 +136,61 @@ class LibraryStatusMapping(Base):
         return (
             f"<LibraryStatusMapping(provider='{self.provider}', "
             f"source_status='{self.source_status}', action='{self.action}')>"
+        )
+
+
+class LibrarySyncSuggestion(Base):
+    """Título encontrado pelo sync que precisa de revisão antes de entrar na biblioteca."""
+
+    __tablename__ = "library_sync_suggestions"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "provider", "source_id", name="uq_library_sync_suggestion_source"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    source_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    media_type: Mapped[MediaTypeEnum] = mapped_column(Enum(MediaTypeEnum), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    source_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_label: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    # ignore | backlog | in_progress | following | on_hold | finished | dropped
+    action: Mapped[str] = mapped_column(String(30), default="ignore", nullable=False)
+    target_status: Mapped[MediaStatusEnum | None] = mapped_column(
+        Enum(MediaStatusEnum), nullable=True
+    )
+    rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    review: Mapped[str | None] = mapped_column(Text, nullable=True)
+    watched_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    candidate_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_refs_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+    # pending | approved | dismissed
+    review_state: Mapped[str] = mapped_column(
+        String(20), default="pending", nullable=False, index=True
+    )
+    media_id: Mapped[int | None] = mapped_column(
+        ForeignKey("media.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<LibrarySyncSuggestion(provider='{self.provider}', "
+            f"source_id='{self.source_id}', state='{self.review_state}')>"
         )

@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from models.enums import MediaStatusEnum, MediaTypeEnum
+from schemas.import_schemas import ImportCandidate, ImportFailure
 
 SyncAction = Literal[
     "ignore",
@@ -39,6 +40,7 @@ class SyncProviderInfo(_CamelModel):
     username: str | None = None
     client_id: str | None = None
     has_token: bool = False
+    pending_review: int = 0
 
 
 class SyncConfigPayload(_CamelModel):
@@ -105,3 +107,61 @@ class OAuthPollResponse(_CamelModel):
     status: str
     account: str | None = None
     error: str | None = None
+
+
+SyncSuggestionState = Literal["pending", "approved", "dismissed"]
+
+
+class SyncSuggestion(_CamelModel):
+    id: int
+    provider: str
+    source_id: str
+    media_type: MediaTypeEnum
+    title: str
+    year: int | None = None
+    source_status: str
+    source_label: str = ""
+    action: SyncAction = "ignore"
+    target_status: MediaStatusEnum | None = None
+    rating: float | None = None
+    review: str | None = None
+    watched_date: date | None = None
+    candidate: ImportCandidate | None = None
+    source_url: str | None = None
+    review_state: SyncSuggestionState = "pending"
+    media_id: int | None = None
+    error: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SyncSuggestionCounts(_CamelModel):
+    pending: int = 0
+    approved: int = 0
+    dismissed: int = 0
+
+
+class SyncSuggestionsResponse(_CamelModel):
+    items: list[SyncSuggestion]
+    total: int
+    counts: SyncSuggestionCounts
+
+
+class SyncSuggestionsApprove(_CamelModel):
+    user_id: int
+    ids: list[int]
+
+
+class SyncSuggestionsApproveResponse(_CamelModel):
+    approved: int
+    failed: int
+    failures: list[ImportFailure] = []
+
+
+class SyncSuggestionStateUpdate(_CamelModel):
+    user_id: int
+    state: Literal["pending", "dismissed"]
+
+
+class SyncSuggestionCountResponse(_CamelModel):
+    pending: int

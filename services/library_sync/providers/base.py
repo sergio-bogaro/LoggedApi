@@ -40,6 +40,8 @@ class SourceItem:
     external_refs: dict[str, str] = field(default_factory=dict)
     source_url: str | None = None
     updated_at: datetime | None = None
+    # Data em que o item foi consumido na origem (diário do Letterboxd, por exemplo).
+    watched_at: date | None = None
 
 
 @dataclass
@@ -61,6 +63,11 @@ class LibraryProvider:
     # username | token | oauth
     auth_kind: str = "username"
     tracks_removals: bool = True
+    # Quando True, títulos ausentes passam pela fila de revisão. Um match exato
+    # (mesmo id externo da origem) ainda pode ser criado automaticamente.
+    review_missing: bool = False
+    # Quando True, o sync cria um MediaLog com a data de consumo da origem.
+    creates_logs: bool = False
 
     def statuses(self) -> list[SourceStatus]:
         return []
