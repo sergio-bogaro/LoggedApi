@@ -1130,6 +1130,14 @@ class SuwayomiTests(unittest.TestCase):
                         category_order=3,
                         action="backlog",
                     ),
+                    SuwayomiCategoryMapping(
+                        user_id=user_id,
+                        category_id=4,
+                        category_name="Completed",
+                        category_order=4,
+                        action="status",
+                        status=MediaStatusEnum.FINISHED,
+                    ),
                 ]
             )
             reading = Media(
@@ -1160,6 +1168,7 @@ class SuwayomiTests(unittest.TestCase):
             categories = [
                 {"id": 1, "name": "Reading", "order": 2, "default": False},
                 {"id": 2, "name": "Plan To Read", "order": 3, "default": False},
+                {"id": 4, "name": "Completed", "order": 4, "default": False},
             ]
             library = [
                 {
@@ -1200,6 +1209,12 @@ class SuwayomiTests(unittest.TestCase):
             )
             self.assertEqual(backlog.date_log, expected_start)
 
+            # Um capítulo novo (nova data) sem mudança de status não cria log.
+            next_read = "1748110000"
+            expected_next = datetime.fromtimestamp(
+                int(next_read), tz=timezone.utc
+            ).replace(tzinfo=None)
+            library[0]["lastReadChapter"] = {"lastReadAt": next_read}
             summary = service._empty_summary(datetime.now())
             asyncio.run(service._run(db, account, categories, library, summary))
             db.commit()
@@ -1210,6 +1225,24 @@ class SuwayomiTests(unittest.TestCase):
                 1,
             )
             self.assertEqual(summary["logsCreated"], 0)
+
+            # Já uma mudança de status cria um novo log com a data da leitura.
+            library[0]["categories"] = {"nodes": [{"id": 4}]}
+            summary = service._empty_summary(datetime.now())
+            asyncio.run(service._run(db, account, categories, library, summary))
+            db.commit()
+            logs = (
+                db.query(MediaLog)
+                .filter_by(user_id=user_id, media_id=reading.id)
+                .order_by(MediaLog.id)
+                .all()
+            )
+            self.assertEqual(len(logs), 2)
+            self.assertEqual(logs[1].status, MediaStatusEnum.FINISHED)
+            self.assertEqual(logs[1].date, expected_next.date())
+            self.assertEqual(logs[1].end_date, expected_next)
+            self.assertEqual(summary["logsCreated"], 1)
+            self.assertEqual(reading.status, MediaStatusEnum.FINISHED)
         finally:
             db.close()
 

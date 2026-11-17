@@ -69,12 +69,15 @@ def _manga_dates(manga: dict) -> tuple[datetime | None, datetime | None]:
     return in_library, last_read
 
 
-def _has_log(db: Session, media_id: int, day: date) -> bool:
+def _has_log(
+    db: Session, media_id: int, day: date, status: MediaStatusEnum
+) -> bool:
     return (
         db.execute(
             select(MediaLog.id).where(
                 MediaLog.media_id == media_id,
                 MediaLog.date == day,
+                MediaLog.status == status,
             )
         ).scalar_one_or_none()
         is not None
@@ -94,11 +97,9 @@ def _add_media_log(
         return
 
     ended = status in (MediaStatusEnum.FINISHED, MediaStatusEnum.DROPPED)
-    moment = last_read_at or (in_library_at if ended else None)
-    if moment is None:
-        return
+    moment = last_read_at or in_library_at or utcnow()
     day = moment.date()
-    if _has_log(db, media.id, day):
+    if _has_log(db, media.id, day, status):
         return
 
     start = in_library_at
@@ -503,19 +504,18 @@ class SuwayomiSyncService:
                     target_status.value if target_status else action,
                     suwayomi_id,
                 )
+                if action == ACTION_STATUS and status is not None:
+                    _add_media_log(
+                        db,
+                        user_id,
+                        media,
+                        status,
+                        in_library_at,
+                        last_read_at,
+                        summary,
+                    )
                 link.last_action = action
                 link.last_status = target_status
-
-            if action == ACTION_STATUS and status is not None:
-                _add_media_log(
-                    db,
-                    user_id,
-                    media,
-                    status,
-                    in_library_at,
-                    last_read_at,
-                    summary,
-                )
 
             link.last_seen_at = now
             link.title = title
