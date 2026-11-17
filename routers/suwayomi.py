@@ -9,6 +9,7 @@ from starlette.concurrency import run_in_threadpool
 
 from database import get_db
 from models.enums import MediaTypeEnum
+from models.library_sync import LibrarySyncSuggestion
 from models.media import Media
 from models.suwayomi import SuwayomiAccount, SuwayomiCategoryMapping, SuwayomiMangaLink
 from schemas.suwayomi import (
@@ -269,6 +270,24 @@ def list_links(
     return [_link_response(link) for link in db.execute(query).scalars().all()]
 
 
+def _sync_suggestion_state(
+    db: Session, link: SuwayomiMangaLink, state: str, media_id: int | None = None
+) -> None:
+    suggestion = db.execute(
+        select(LibrarySyncSuggestion).where(
+            LibrarySyncSuggestion.user_id == link.user_id,
+            LibrarySyncSuggestion.provider == "suwayomi",
+            LibrarySyncSuggestion.source_id == str(link.suwayomi_manga_id),
+        )
+    ).scalar_one_or_none()
+    if suggestion is None:
+        return
+    suggestion.review_state = state
+    suggestion.media_id = media_id
+    suggestion.error = None
+    suggestion.decided_at = utcnow() if state != "pending" else None
+
+
 @router.patch("/links/{link_id}", response_model=SuwayomiLink)
 def update_link(
     link_id: int,
@@ -296,6 +315,7 @@ def update_link(
         # Força a próxima sincronização a aplicar a categoria atual.
         link.last_action = None
         link.last_status = None
+        _sync_suggestion_state(db, link, "approved", media.id)
 
     if "ignored" in fields and data.ignored is not None:
         if data.ignored and link.media_id is not None:
@@ -304,6 +324,9 @@ def update_link(
         link.match_error = None
         link.last_match_attempt_at = None
         link.match_attempts = 0
+        _sync_suggestion_state(
+            db, link, "dismissed" if data.ignored else "pending"
+        )
 
     db.commit()
     db.refresh(link)

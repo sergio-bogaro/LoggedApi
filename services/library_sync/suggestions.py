@@ -1,7 +1,7 @@
 """Fila de revisão de títulos encontrados pelos syncs de biblioteca."""
 
 import json
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -12,6 +12,7 @@ from models.library_sync import (
     LibrarySyncLink,
     LibrarySyncSuggestion,
 )
+from models.suwayomi import SuwayomiMangaLink
 from schemas.import_schemas import (
     ImportCandidate,
     ImportCommitEntry,
@@ -94,6 +95,68 @@ def load_suggestions(
     return {row.source_id: row for row in rows}
 
 
+def stage_suggestion_values(
+    db: Session,
+    suggestions: dict[str, LibrarySyncSuggestion],
+    *,
+    user_id: int,
+    provider: str,
+    source_id: str,
+    media_type: MediaTypeEnum,
+    title: str,
+    source_status: str,
+    source_label: str,
+    action: str,
+    target_status: MediaStatusEnum | None,
+    candidate: ImportCandidate | None,
+    error: str | None,
+    year: int | None = None,
+    rating: float | None = None,
+    review: str | None = None,
+    watched_date: date | None = None,
+    source_url: str | None = None,
+    refs: dict[str, str] | None = None,
+) -> LibrarySyncSuggestion:
+    """Cria ou atualiza uma sugestão pendente de qualquer provedor."""
+    suggestion = suggestions.get(source_id)
+    if suggestion is None:
+        suggestion = LibrarySyncSuggestion(
+            user_id=user_id,
+            provider=provider,
+            source_id=source_id,
+            media_type=media_type,
+            title=title,
+            source_status=source_status,
+            review_state="pending",
+        )
+        db.add(suggestion)
+        suggestions[source_id] = suggestion
+
+    # Uma decisão já tomada pelo usuário não é reaberta pelo sync.
+    if suggestion.review_state != "pending":
+        return suggestion
+
+    suggestion.media_type = media_type
+    suggestion.title = title or suggestion.title
+    suggestion.year = year
+    suggestion.source_status = source_status
+    suggestion.source_label = source_label
+    suggestion.action = action
+    suggestion.target_status = target_status
+    suggestion.rating = rating
+    suggestion.review = review
+    suggestion.watched_date = watched_date
+    suggestion.source_url = source_url
+    suggestion.source_refs_json = json.dumps(refs or {}, ensure_ascii=False)
+    if candidate is not None:
+        suggestion.candidate_json = candidate_to_json(candidate)
+        suggestion.error = error
+    elif suggestion.candidate_json is None:
+        suggestion.error = error
+    db.flush()
+    return suggestion
+
+
 def stage_suggestion(
     db: Session,
     connection: LibraryConnection,
@@ -106,44 +169,33 @@ def stage_suggestion(
     candidate: ImportCandidate | None,
     error: str | None,
 ) -> LibrarySyncSuggestion:
-    """Cria ou atualiza uma sugestão pendente para o item."""
-    suggestion = suggestions.get(item.source_id)
-    if suggestion is None:
-        suggestion = LibrarySyncSuggestion(
-            user_id=connection.user_id,
-            provider=connection.provider,
-            source_id=item.source_id,
-            media_type=item.media_type,
-            title=item.title,
-            source_status=item.status,
-            review_state="pending",
-        )
-        db.add(suggestion)
-        suggestions[item.source_id] = suggestion
-
-    suggestion.media_type = item.media_type
-    suggestion.title = item.title or suggestion.title
-    suggestion.year = item.year
-    suggestion.source_status = item.status
-    suggestion.source_label = source_label
-    suggestion.action = action
-    suggestion.target_status = target_status
-    suggestion.rating = item.rating
-    suggestion.review = item.review
-    suggestion.watched_date = item.watched_at
-    suggestion.source_url = item.source_url
-    suggestion.source_refs_json = json.dumps(
-        suggestion_refs(connection, item), ensure_ascii=False
+    """Cria ou atualiza uma sugestão pendente para o item genérico."""
+    return stage_suggestion_values(
+        db,
+        suggestions,
+        user_id=connection.user_id,
+        provider=connection.provider,
+        source_id=item.source_id,
+        media_type=item.media_type,
+        title=item.title,
+        source_status=item.status,
+        source_label=source_label,
+        action=action,
+        target_status=target_status,
+        candidate=candidate,
+        error=error,
+        year=item.year,
+        rating=item.rating,
+        review=item.review,
+        watched_date=item.watched_at,
+        source_url=item.source_url,
+        refs=suggestion_refs(connection, item),
     )
-    if candidate is not None:
-        suggestion.candidate_json = candidate_to_json(candidate)
-    if error is not None:
-        suggestion.error = error
-    db.flush()
-    return suggestion
 
 
-def candidate_for_suggestion(suggestion: LibrarySyncSuggestion) -> ImportCandidate:
+def candidate_for_suggestion(
+    suggestion: LibrarySyncSuggestion,
+) -> ImportCandidate | None:
     candidate = candidate_from_json(suggestion.candidate_json)
     if candidate is not None:
         return candidate
@@ -154,8 +206,9 @@ def candidate_for_suggestion(suggestion: LibrarySyncSuggestion) -> ImportCandida
         refs.get("tmdbId")
         or refs.get("anilistId")
         or refs.get("openlibraryId")
-        or suggestion.source_id
     )
+    if not external_id:
+        return None
     return ImportCandidate(
         provider=suggestion.provider,
         external_id=str(external_id),
@@ -182,15 +235,20 @@ def suggestion_logs(suggestion: LibrarySyncSuggestion) -> list[ImportLogEntry]:
     ]
 
 
-def suggestion_entry(suggestion: LibrarySyncSuggestion) -> ImportCommitEntry:
+def suggestion_entry(
+    suggestion: LibrarySyncSuggestion,
+) -> ImportCommitEntry | None:
     candidate = candidate_for_suggestion(suggestion)
+    if candidate is None:
+        return None
     refs = _loads(suggestion.source_refs_json, {})
     if not isinstance(refs, dict):
         refs = {}
     refs = {str(key): str(value) for key, value in refs.items() if value is not None}
-    refs.setdefault("syncProvider", suggestion.provider)
-    refs.setdefault("syncSourceId", suggestion.source_id)
-    refs.setdefault("syncStatus", suggestion.source_status)
+    if suggestion.provider != "suwayomi":
+        refs.setdefault("syncProvider", suggestion.provider)
+        refs.setdefault("syncSourceId", suggestion.source_id)
+        refs.setdefault("syncStatus", suggestion.source_status)
     status = suggestion.target_status if suggestion.action != "backlog" else None
     return ImportCommitEntry(
         key=suggestion_key(suggestion),
@@ -230,18 +288,34 @@ def approve_suggestions(
     if not suggestions:
         raise ValueError("Nenhuma sugestão pendente foi encontrada.")
 
-    response = committer.commit(
-        db,
-        ImportCommitRequest(
-            user_id=user_id,
-            entries=[suggestion_entry(suggestion) for suggestion in suggestions],
-        ),
-    )
-    by_key = {item.key: item for item in response.items}
-
-    approved = 0
+    entries: list[tuple[LibrarySyncSuggestion, ImportCommitEntry]] = []
     failures: list[ImportFailure] = []
     for suggestion in suggestions:
+        entry = suggestion_entry(suggestion)
+        if entry is None:
+            suggestion.error = "Escolha um match antes de adicionar."
+            failures.append(
+                ImportFailure(
+                    name=suggestion.title,
+                    reason=suggestion.error,
+                )
+            )
+            continue
+        entries.append((suggestion, entry))
+
+    by_key = {}
+    if entries:
+        response = committer.commit(
+            db,
+            ImportCommitRequest(
+                user_id=user_id,
+                entries=[entry for _suggestion, entry in entries],
+            ),
+        )
+        by_key = {item.key: item for item in response.items}
+
+    approved = 0
+    for suggestion, _entry in entries:
         result = by_key.get(suggestion_key(suggestion))
         if result is None or result.outcome == "failed":
             suggestion.error = (
@@ -258,13 +332,27 @@ def approve_suggestions(
         suggestion.review_state = "approved"
         suggestion.error = None
         suggestion.decided_at = utcnow()
-        link = db.execute(
-            select(LibrarySyncLink).where(
-                LibrarySyncLink.user_id == user_id,
-                LibrarySyncLink.provider == suggestion.provider,
-                LibrarySyncLink.source_id == suggestion.source_id,
-            )
-        ).scalar_one_or_none()
+        if suggestion.provider == "suwayomi":
+            try:
+                suwayomi_id = int(suggestion.source_id)
+            except (TypeError, ValueError):
+                suwayomi_id = None
+            link = None
+            if suwayomi_id is not None:
+                link = db.execute(
+                    select(SuwayomiMangaLink).where(
+                        SuwayomiMangaLink.user_id == user_id,
+                        SuwayomiMangaLink.suwayomi_manga_id == suwayomi_id,
+                    )
+                ).scalar_one_or_none()
+        else:
+            link = db.execute(
+                select(LibrarySyncLink).where(
+                    LibrarySyncLink.user_id == user_id,
+                    LibrarySyncLink.provider == suggestion.provider,
+                    LibrarySyncLink.source_id == suggestion.source_id,
+                )
+            ).scalar_one_or_none()
         if link is not None:
             suggestion.media_id = link.media_id
         approved += 1
@@ -292,6 +380,48 @@ def set_suggestion_state(
     suggestion.decided_at = utcnow() if state == "dismissed" else None
     if state == "pending":
         suggestion.error = None
+
+    if suggestion.provider == "suwayomi":
+        try:
+            suwayomi_id = int(suggestion.source_id)
+        except (TypeError, ValueError):
+            suwayomi_id = None
+        link = None
+        if suwayomi_id is not None:
+            link = db.execute(
+                select(SuwayomiMangaLink).where(
+                    SuwayomiMangaLink.user_id == user_id,
+                    SuwayomiMangaLink.suwayomi_manga_id == suwayomi_id,
+                )
+            ).scalar_one_or_none()
+        if link is not None and link.media_id is None:
+            link.ignored = state == "dismissed"
+            link.match_error = None
+            link.last_match_attempt_at = None
+            link.match_attempts = 0
+
+    db.commit()
+    db.refresh(suggestion)
+    return suggestion
+
+
+def set_suggestion_candidate(
+    db: Session,
+    user_id: int,
+    suggestion_id: int,
+    candidate: ImportCandidate,
+) -> LibrarySyncSuggestion:
+    suggestion = db.get(LibrarySyncSuggestion, suggestion_id)
+    if suggestion is None or suggestion.user_id != user_id:
+        raise ValueError("Sugestão não encontrada.")
+    if suggestion.review_state == "approved":
+        raise ValueError("Este título já foi adicionado à biblioteca.")
+    if candidate.media_type != suggestion.media_type:
+        raise ValueError("O match escolhido é de outro tipo de mídia.")
+
+    suggestion.candidate_json = candidate_to_json(candidate)
+    suggestion.error = None
+    suggestion.decided_at = None
     db.commit()
     db.refresh(suggestion)
     return suggestion

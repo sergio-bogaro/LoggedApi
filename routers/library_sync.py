@@ -30,6 +30,7 @@ from schemas.library_sync import (
     SyncStatusesUpdate,
     SyncStatusOption,
     SyncSuggestion,
+    SyncSuggestionCandidateUpdate,
     SyncSuggestionCountResponse,
     SyncSuggestionCounts,
     SyncSuggestionsApprove,
@@ -52,6 +53,7 @@ from services.library_sync.suggestions import (
     approve_suggestions,
     candidate_from_json,
     pending_count,
+    set_suggestion_candidate,
     set_suggestion_state,
     suggestion_counts,
 )
@@ -320,6 +322,20 @@ def update_sync_suggestion(
 ):
     suggestion = set_suggestion_state(
         db, data.user_id, suggestion_id, data.state
+    )
+    return _suggestion_response(suggestion)
+
+
+@router.patch(
+    "/suggestions/{suggestion_id}/candidate", response_model=SyncSuggestion
+)
+def update_sync_suggestion_candidate(
+    suggestion_id: int,
+    data: SyncSuggestionCandidateUpdate,
+    db: Session = Depends(get_db),
+):
+    suggestion = set_suggestion_candidate(
+        db, data.user_id, suggestion_id, data.candidate
     )
     return _suggestion_response(suggestion)
 

@@ -15,13 +15,18 @@ from sqlalchemy.orm import Session, noload
 
 from database import SessionLocal
 from models.enums import MediaStatusEnum, MediaTypeEnum
+from models.library_sync import LibrarySyncSuggestion
 from models.media import Media
 from models.media_list_item import MediaListItem
 from models.media_log import MediaLog
 from models.suwayomi import SuwayomiAccount, SuwayomiCategoryMapping, SuwayomiMangaLink
-from schemas.import_schemas import ImportCandidate
+from schemas.import_schemas import ImportCandidate, ImportMatchResult
 from services.importer.matcher import matcher
 from services.importer.text import normalize_title, search_title
+from services.library_sync.suggestions import (
+    load_suggestions,
+    stage_suggestion_values,
+)
 from services.suwayomi.categories import (
     ACTION_BACKLOG,
     ACTION_IGNORE,
@@ -244,6 +249,86 @@ def _apply_action(
         _add_to_backlog(db, user_id, media.id, link, summary, in_library_at)
 
 
+def _suggestion_action(action: str, status: MediaStatusEnum | None) -> str:
+    if action == ACTION_STATUS and status is not None:
+        return status.value
+    if action == ACTION_BACKLOG:
+        return ACTION_BACKLOG
+    return ACTION_IGNORE
+
+
+def _stage_review_suggestion(
+    db: Session,
+    suggestions: dict[str, LibrarySyncSuggestion],
+    *,
+    user_id: int,
+    link: SuwayomiMangaLink,
+    manga: dict,
+    title: str,
+    action: str,
+    status: MediaStatusEnum | None,
+    candidate: ImportCandidate | None,
+    error: str | None,
+    summary: dict,
+) -> LibrarySyncSuggestion:
+    source_id = str(link.suwayomi_manga_id)
+    real_url = (manga.get("realUrl") or manga.get("url") or "").strip()
+    refs = {"suwayomiId": source_id}
+    if real_url:
+        refs["suwayomiUrl"] = real_url
+
+    watched_date: date | None = None
+    if status is not None:
+        in_library_at, last_read_at = _manga_dates(manga)
+        moment = last_read_at or in_library_at or utcnow()
+        watched_date = moment.date()
+
+    already_exists = source_id in suggestions
+    suggestion = stage_suggestion_values(
+        db,
+        suggestions,
+        user_id=user_id,
+        provider="suwayomi",
+        source_id=source_id,
+        media_type=MediaTypeEnum.MANGA,
+        title=title,
+        source_status=_suggestion_action(action, status),
+        source_label=_suggestion_action(action, status),
+        action=_suggestion_action(action, status),
+        target_status=status,
+        candidate=candidate,
+        error=error,
+        watched_date=watched_date,
+        source_url=real_url or None,
+        refs=refs,
+    )
+    if not already_exists:
+        summary["reviewStaged"] += 1
+    return suggestion
+
+
+def _approve_suggestion(
+    suggestions: dict[str, LibrarySyncSuggestion],
+    suwayomi_id: int,
+    media: Media,
+) -> None:
+    suggestion = suggestions.get(str(suwayomi_id))
+    if suggestion is None or suggestion.review_state == "approved":
+        return
+    suggestion.review_state = "approved"
+    suggestion.media_id = media.id
+    suggestion.error = None
+    suggestion.decided_at = utcnow()
+
+
+def _match_error(result: ImportMatchResult) -> str:
+    if result.error:
+        return result.error
+    if result.match is not None:
+        return "Match duvidoso; revise antes de adicionar."
+    return "Título não encontrado no AniList; busque um match."
+
+
 class SuwayomiSyncService:
     def __init__(self) -> None:
         self._running: set[int] = set()
@@ -339,6 +424,7 @@ class SuwayomiSyncService:
             .scalars()
             .all()
         }
+        suggestions = load_suggestions(db, user_id, "suwayomi")
 
         # Mapa de títulos já existentes para vincular sem duplicar mídias.
         existing_by_title: dict[str, Media] = {}
@@ -371,9 +457,22 @@ class SuwayomiSyncService:
             )
             now = utcnow()
             link = links.get(suwayomi_id)
+            suggestion = suggestions.get(str(suwayomi_id))
 
             # Ignorado manualmente na revisão da importação: não tenta match,
             # não cria mídia e não aparece como pendente.
+            if (
+                suggestion is not None
+                and suggestion.review_state == "dismissed"
+                and (link is None or link.media_id is None)
+            ):
+                if link is not None:
+                    link.ignored = True
+                    link.match_error = None
+                    link.last_seen_at = now
+                summary["ignoredSkipped"] += 1
+                continue
+
             if link is not None and link.ignored and link.media_id is None:
                 link.last_seen_at = now
                 summary["ignoredSkipped"] += 1
@@ -420,6 +519,7 @@ class SuwayomiSyncService:
                         existing_by_title[normalize_title(media.title)] = media
                         summary["created"] += 1
                     else:
+                        error = _match_error(result)
                         link = SuwayomiMangaLink(
                             user_id=user_id,
                             suwayomi_manga_id=suwayomi_id,
@@ -428,14 +528,28 @@ class SuwayomiSyncService:
                             last_seen_at=now,
                             last_match_attempt_at=now,
                             match_attempts=1,
-                            match_error=(
-                                result.error
-                                or "Título não encontrado no AniList; vincule ou ignore em Configurações → Suwayomi."
-                            ),
+                            match_error=error,
                         )
                         db.add(link)
                         links[suwayomi_id] = link
-                        self._append_unmatched(summary, title, link.match_error)
+                        _stage_review_suggestion(
+                            db,
+                            suggestions,
+                            user_id=user_id,
+                            link=link,
+                            manga=manga,
+                            title=title,
+                            action=action,
+                            status=status,
+                            candidate=(
+                                result.match
+                                if result.status == "ambiguous"
+                                else None
+                            ),
+                            error=error,
+                            summary=summary,
+                        )
+                        self._append_unmatched(summary, title, error)
                         continue
 
                 link = SuwayomiMangaLink(
@@ -449,6 +563,7 @@ class SuwayomiSyncService:
                 links[suwayomi_id] = link
                 if media is not None:
                     existing_by_title.setdefault(normalize_title(media.title), media)
+                    _approve_suggestion(suggestions, suwayomi_id, media)
 
             if link.media_id is None:
                 link.last_seen_at = now
@@ -464,6 +579,7 @@ class SuwayomiSyncService:
                     account,
                     existing_by_title,
                     media_by_id,
+                    suggestions,
                     summary,
                 )
                 if not resolved:
@@ -484,8 +600,16 @@ class SuwayomiSyncService:
                 link.media_id = None
                 link.match_error = "A mídia vinculada foi removida do Logged."
                 link.last_seen_at = now
+                removed_suggestion = suggestions.get(str(suwayomi_id))
+                if removed_suggestion is not None:
+                    removed_suggestion.review_state = "pending"
+                    removed_suggestion.media_id = None
+                    removed_suggestion.error = link.match_error
+                    removed_suggestion.decided_at = None
                 self._append_unmatched(summary, title, link.match_error)
                 continue
+
+            _approve_suggestion(suggestions, suwayomi_id, media)
 
             target_status = status if action == ACTION_STATUS else None
             if (link.last_action, link.last_status) != (action, target_status):
@@ -549,6 +673,7 @@ class SuwayomiSyncService:
         account: SuwayomiAccount,
         existing_by_title: dict[str, Media],
         media_by_id: dict[int, Media],
+        suggestions: dict[str, LibrarySyncSuggestion],
         summary: dict,
     ) -> bool:
         """Tenta resolver um link que ficou pendente em syncs anteriores.
@@ -557,6 +682,20 @@ class SuwayomiSyncService:
         adicionada manualmente). O AniList é tentado no máximo uma vez a cada
         24h para não martelar a API com títulos que nunca vão casar.
         """
+        suggestion = suggestions.get(str(link.suwayomi_manga_id))
+        if suggestion is not None:
+            if suggestion.review_state == "approved":
+                if link.media_id is None:
+                    suggestion.review_state = "pending"
+                    suggestion.media_id = None
+                else:
+                    return False
+            if suggestion.review_state == "dismissed":
+                return False
+            # Já existe candidato aguardando decisão; não sobrescreve a escolha.
+            if suggestion.candidate_json:
+                return False
+
         media = existing_by_title.get(normalize_title(title))
 
         if media is None:
@@ -565,6 +704,22 @@ class SuwayomiSyncService:
                 link.last_match_attempt_at is not None
                 and now - link.last_match_attempt_at < _PENDING_RETRY_INTERVAL
             ):
+                _stage_review_suggestion(
+                    db,
+                    suggestions,
+                    user_id=user_id,
+                    link=link,
+                    manga=manga,
+                    title=title,
+                    action=action,
+                    status=status,
+                    candidate=None,
+                    error=(
+                        link.match_error
+                        or "Aguardando novo match no AniList; busque um match."
+                    ),
+                    summary=summary,
+                )
                 return False
 
             link.last_match_attempt_at = now
@@ -595,20 +750,47 @@ class SuwayomiSyncService:
                 existing_by_title[normalize_title(media.title)] = media
                 summary["created"] += 1
             else:
-                link.match_error = (
-                    result.error
-                    or "Título não encontrado no AniList; vincule ou ignore em Configurações → Suwayomi."
+                error = _match_error(result)
+                link.match_error = error
+                _stage_review_suggestion(
+                    db,
+                    suggestions,
+                    user_id=user_id,
+                    link=link,
+                    manga=manga,
+                    title=title,
+                    action=action,
+                    status=status,
+                    candidate=(
+                        result.match if result.status == "ambiguous" else None
+                    ),
+                    error=error,
+                    summary=summary,
                 )
                 return False
 
         if media is None:
             link.match_error = "Título não encontrado no Logged nem no AniList."
+            _stage_review_suggestion(
+                db,
+                suggestions,
+                user_id=user_id,
+                link=link,
+                manga=manga,
+                title=title,
+                action=action,
+                status=status,
+                candidate=None,
+                error=link.match_error,
+                summary=summary,
+            )
             return False
 
         link.media_id = media.id
         link.match_error = None
         media_by_id[media.id] = media
         existing_by_title.setdefault(normalize_title(media.title), media)
+        _approve_suggestion(suggestions, link.suwayomi_manga_id, media)
         if len(summary["pendingResolved"]) < 50:
             summary["pendingResolved"].append(title)
         return True
@@ -633,6 +815,7 @@ class SuwayomiSyncService:
             "logsCreated": 0,
             "datedItems": 0,
             "ignoredSkipped": 0,
+            "reviewStaged": 0,
             "unmatched": [],
             "removed": [],
             "changes": [],

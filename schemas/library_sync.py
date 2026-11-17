@@ -163,6 +163,11 @@ class SyncSuggestionStateUpdate(_CamelModel):
     state: Literal["pending", "dismissed"]
 
 
+class SyncSuggestionCandidateUpdate(_CamelModel):
+    user_id: int
+    candidate: ImportCandidate
+
+
 class SyncSuggestionCountResponse(_CamelModel):
     pending: int
 

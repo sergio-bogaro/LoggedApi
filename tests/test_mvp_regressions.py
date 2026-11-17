@@ -834,6 +834,267 @@ class SuwayomiTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_ambiguous_suwayomi_match_stages_and_approves_suggestion(self) -> None:
+        from datetime import datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.library_sync import LibrarySyncSuggestion
+        from models.media import Media
+        from models.media_log import MediaLog
+        from models.suwayomi import (
+            SuwayomiAccount,
+            SuwayomiCategoryMapping,
+            SuwayomiMangaLink,
+        )
+        from schemas.import_schemas import ImportCandidate, ImportMatchResult
+        from services.library_sync.suggestions import (
+            approve_suggestions,
+            set_suggestion_state,
+        )
+        from services.suwayomi import sync as sync_module
+
+        user_id = self._user()
+
+        async def fake_resolve(*_args, **_kwargs):
+            candidate = ImportCandidate(
+                provider="anilist",
+                external_id="180511",
+                media_type=MediaTypeEnum.MANGA,
+                title="Ambiguous Manga",
+                year=2024,
+                score=0.5,
+            )
+            return ImportMatchResult(
+                key="suwayomi",
+                status="ambiguous",
+                match=candidate,
+                candidates=[candidate],
+            )
+
+        db = SessionLocal()
+        try:
+            account = SuwayomiAccount(
+                user_id=user_id, base_url="http://suwayomi.test", enabled=False
+            )
+            db.add(account)
+            db.add(
+                SuwayomiCategoryMapping(
+                    user_id=user_id,
+                    category_id=1,
+                    category_name="Reading",
+                    category_order=2,
+                    action="status",
+                    status=MediaStatusEnum.IN_PROGRESS,
+                )
+            )
+            db.commit()
+
+            categories = [
+                {"id": 0, "name": "Default", "order": 0, "default": True},
+                {"id": 1, "name": "Reading", "order": 2, "default": False},
+            ]
+            library = [
+                {
+                    "id": 2001,
+                    "title": "Ambiguous Manga",
+                    "realUrl": "http://suwayomi.test/manga/2001",
+                    "categories": {"nodes": [{"id": 1}]},
+                }
+            ]
+            summary = sync_module.service._empty_summary(datetime.now())
+            with patch.object(sync_module.matcher, "resolve_manga", fake_resolve):
+                asyncio.run(
+                    sync_module.service._run(
+                        db, account, categories, library, summary
+                    )
+                )
+            db.commit()
+
+            link = (
+                db.query(SuwayomiMangaLink)
+                .filter_by(user_id=user_id, suwayomi_manga_id=2001)
+                .one()
+            )
+            suggestion = (
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id, provider="suwayomi", source_id="2001")
+                .one()
+            )
+            self.assertIsNone(link.media_id)
+            self.assertEqual(suggestion.review_state, "pending")
+            self.assertIsNotNone(suggestion.candidate_json)
+            self.assertEqual(suggestion.action, "in_progress")
+            self.assertEqual(
+                suggestion.target_status, MediaStatusEnum.IN_PROGRESS
+            )
+            self.assertIn('"suwayomiId": "2001"', suggestion.source_refs_json)
+            self.assertNotIn("syncProvider", suggestion.source_refs_json)
+            self.assertEqual(summary["reviewStaged"], 1)
+            self.assertEqual(
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id="180511")
+                .count(),
+                0,
+            )
+
+            set_suggestion_state(db, user_id, suggestion.id, "dismissed")
+            db.refresh(link)
+            self.assertTrue(link.ignored)
+            set_suggestion_state(db, user_id, suggestion.id, "pending")
+            db.refresh(link)
+            self.assertFalse(link.ignored)
+
+            result = approve_suggestions(db, user_id, [suggestion.id])
+            self.assertEqual(result["approved"], 1)
+            self.assertEqual(result["failed"], 0)
+
+            media = (
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id="180511")
+                .one()
+            )
+            db.refresh(link)
+            db.refresh(suggestion)
+            self.assertEqual(link.media_id, media.id)
+            self.assertEqual(suggestion.review_state, "approved")
+            self.assertEqual(suggestion.media_id, media.id)
+            self.assertEqual(media.status, MediaStatusEnum.IN_PROGRESS)
+            self.assertEqual(
+                db.query(MediaLog).filter_by(media_id=media.id).count(), 1
+            )
+        finally:
+            db.close()
+
+    def test_no_match_suwayomi_suggestion_requires_candidate(self) -> None:
+        from datetime import datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.library_sync import LibrarySyncSuggestion
+        from models.media import Media
+        from models.suwayomi import SuwayomiAccount, SuwayomiCategoryMapping
+        from schemas.import_schemas import ImportMatchResult
+        from services.library_sync.suggestions import approve_suggestions
+        from services.suwayomi import sync as sync_module
+
+        user_id = self._user()
+
+        async def fake_resolve(*_args, **_kwargs):
+            return ImportMatchResult(
+                key="suwayomi",
+                status="not_found",
+                match=None,
+                candidates=[],
+            )
+
+        db = SessionLocal()
+        try:
+            account = SuwayomiAccount(
+                user_id=user_id, base_url="http://suwayomi.test", enabled=False
+            )
+            db.add(account)
+            db.add(
+                SuwayomiCategoryMapping(
+                    user_id=user_id,
+                    category_id=1,
+                    category_name="Reading",
+                    category_order=2,
+                    action="status",
+                    status=MediaStatusEnum.IN_PROGRESS,
+                )
+            )
+            db.commit()
+
+            categories = [
+                {"id": 0, "name": "Default", "order": 0, "default": True},
+                {"id": 1, "name": "Reading", "order": 2, "default": False},
+            ]
+            library = [
+                {
+                    "id": 2002,
+                    "title": "Missing Manga",
+                    "categories": {"nodes": [{"id": 1}]},
+                }
+            ]
+            summary = sync_module.service._empty_summary(datetime.now())
+            with patch.object(sync_module.matcher, "resolve_manga", fake_resolve):
+                asyncio.run(
+                    sync_module.service._run(
+                        db, account, categories, library, summary
+                    )
+                )
+            db.commit()
+
+            suggestion = (
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id, provider="suwayomi", source_id="2002")
+                .one()
+            )
+            self.assertIsNone(suggestion.candidate_json)
+            self.assertIn("não encontrado", suggestion.error or "")
+            self.assertEqual(summary["reviewStaged"], 1)
+
+            result = approve_suggestions(db, user_id, [suggestion.id])
+            self.assertEqual(result["approved"], 0)
+            self.assertEqual(result["failed"], 1)
+            db.refresh(suggestion)
+            self.assertEqual(suggestion.review_state, "pending")
+            self.assertIn("Escolha um match", suggestion.error or "")
+            self.assertEqual(
+                db.query(Media)
+                .filter_by(user_id=user_id, title="Missing Manga")
+                .count(),
+                0,
+            )
+        finally:
+            db.close()
+
+    def test_suggestion_candidate_endpoint(self) -> None:
+        from database import SessionLocal
+        from models.enums import MediaTypeEnum
+        from models.library_sync import LibrarySyncSuggestion
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            suggestion = LibrarySyncSuggestion(
+                user_id=user_id,
+                provider="suwayomi",
+                source_id="2003",
+                media_type=MediaTypeEnum.MANGA,
+                title="Candidate Manga",
+                source_status="in_progress",
+                source_label="in_progress",
+                action="in_progress",
+                review_state="pending",
+                source_refs_json='{"suwayomiId": "2003"}',
+            )
+            db.add(suggestion)
+            db.commit()
+            suggestion_id = suggestion.id
+        finally:
+            db.close()
+
+        response = self.client.patch(
+            f"/api/integrations/suggestions/{suggestion_id}/candidate",
+            json={
+                "userId": user_id,
+                "candidate": {
+                    "provider": "anilist",
+                    "externalId": "999001",
+                    "mediaType": MediaTypeEnum.MANGA,
+                    "title": "Candidate Manga",
+                    "year": 2024,
+                    "score": 0.9,
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["candidate"]["externalId"], "999001")
+        self.assertIsNone(body["error"])
+
     def test_letterboxd_rss_item_fields(self) -> None:
         from services.library_sync.providers.letterboxd import LetterboxdProvider
         from defusedxml.ElementTree import fromstring
