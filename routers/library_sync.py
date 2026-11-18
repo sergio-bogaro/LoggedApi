@@ -137,6 +137,7 @@ def _info(
             or str(auth.get("access_token") or "").strip()
         ),
         pending_review=pending_review,
+        sync_partial=provider.sync_partial,
     )
 
 

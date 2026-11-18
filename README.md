@@ -183,6 +183,10 @@ Provedores: AniList, MyAnimeList, Kitsu, Trakt, Simkl, Letterboxd, Hardcover,
 Open Library e Suwayomi. Trakt e Simkl usam OAuth device; Hardcover usa token
 pessoal; MyAnimeList usa Client ID.
 
+O sync do Letterboxd é parcial: o RSS traz apenas os ~50 diários mais recentes
+e não inclui a watchlist. Para o histórico completo, use a importação do ZIP
+exportado pelo Letterboxd em **Importar**.
+
 Variáveis de ambiente para os apps OAuth/Client ID:
 
 ```env
@@ -199,16 +203,17 @@ próprio Hardcover.
 
 ### Como o sync decide o que fazer
 
-A primeira execução é um baseline: vincula o que já existe no Logged e lista o
-que falta, sem criar títulos em massa. Depois do baseline:
+O sync nunca cria mídia sozinho. Todo título remoto que ainda não existe no
+Logged vira uma sugestão pendente em **Importar → Automáticos**, inclusive os
+matches exatos. A revisão usa o mesmo commit da importação manual: ao aprovar,
+a mídia, os logs, o backlog e o vínculo de sync são criados juntos.
 
-- match exato é criado direto e registrado no histórico como automático;
-- match duvidoso ou sem candidato vai para **Importar → Automáticos**;
-- títulos já vinculados recebem status, backlog e logs conforme o mapeamento
-  (logs quando o provedor fornece datas);
+- títulos já vinculados recebem status, backlog e logs conforme o mapeamento;
+- logs são criados quando o provedor fornece datas de início/fim/leitura;
 - alterações manuais são preservadas até o status de origem mudar;
-- só o backlog criado pelo próprio sync é removido por ele.
+- só o backlog criado pelo próprio sync é removido por ele;
+- títulos novos que aparecerem depois também entram na revisão.
 
-O Letterboxd sempre passa pela revisão. O Suwayomi usa as categorias como
-status/backlog, aproveita as datas de leitura para os logs e leva vínculos
-pendentes para a fila automática.
+Depois de conectar uma integração, a UI sugere a **sincronização inicial**. Ela
+não cria títulos direto: apenas popula a fila de revisão. O Suwayomi segue a
+mesma regra e usa as categorias como status/backlog.

@@ -148,7 +148,12 @@ class AniListProvider(ImportProvider):
             title=name,
             year=start_year,
             source="anilist",
-            external_refs={"anilistId": str(media_id)},
+            external_refs={
+                "anilistId": str(media_id),
+                "syncProvider": "anilist",
+                "syncSourceId": str(media_id),
+                "syncStatus": status_raw,
+            },
             status=status,
             rating=score,
             review=notes,

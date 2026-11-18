@@ -58,6 +58,8 @@ class AniListProvider(LibraryProvider):
     label = "AniList"
     media_types = [MediaTypeEnum.ANIME, MediaTypeEnum.MANGA]
     auth_kind = "username"
+    trusted_external_id = True
+    creates_logs = True
 
     def statuses(self) -> list[SourceStatus]:
         return [
@@ -98,6 +100,8 @@ class AniListProvider(LibraryProvider):
                     "perfil é público."
                 )
             for group in collection.get("lists") or []:
+                if group.get("isCustomList"):
+                    continue
                 for entry in group.get("entries") or []:
                     media = entry.get("media") or {}
                     media_id = media.get("id")
@@ -111,11 +115,21 @@ class AniListProvider(LibraryProvider):
                         or str(media_id)
                     )
                     start = to_date(_fuzzy(media.get("startDate")))
+                    status = str(entry.get("status") or "CURRENT")
+                    started = to_date(_fuzzy(entry.get("startedAt")))
+                    completed = to_date(_fuzzy(entry.get("completedAt")))
+                    # Mesma regra do importador: itens fora do backlog ganham
+                    # um log com a data de conclusão/início (ou hoje).
+                    watched = (
+                        None
+                        if status == "PLANNING"
+                        else (completed or started or date.today())
+                    )
                     items[int(media_id)] = SourceItem(
                         source_id=str(media_id),
                         media_type=media_type,
                         title=title,
-                        status=str(entry.get("status") or "CURRENT"),
+                        status=status,
                         year=year_of(start) if start else None,
                         rating=_normalize_score(entry.get("score")),
                         review=(entry.get("notes") or None),
@@ -126,6 +140,7 @@ class AniListProvider(LibraryProvider):
                         external_refs={"anilistId": str(media_id)},
                         source_url=f"https://anilist.co/{'anime' if media_type == MediaTypeEnum.ANIME else 'manga'}/{media_id}",
                         updated_at=to_datetime(entry.get("updatedAt")),
+                        watched_at=watched,
                     )
         return SourceSnapshot(items=list(items.values()), statuses=self.statuses())
 

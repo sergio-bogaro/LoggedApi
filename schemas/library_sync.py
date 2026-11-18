@@ -41,6 +41,7 @@ class SyncProviderInfo(_CamelModel):
     client_id: str | None = None
     has_token: bool = False
     pending_review: int = 0
+    sync_partial: bool = False
 
 
 class SyncConfigPayload(_CamelModel):
@@ -142,6 +143,7 @@ class SyncSuggestionCounts(_CamelModel):
     pending: int = 0
     approved: int = 0
     dismissed: int = 0
+    ready: int = 0
     attention: int = 0
     no_match: int = 0
     last_sync: int = 0

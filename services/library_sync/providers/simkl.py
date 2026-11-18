@@ -19,6 +19,7 @@ from services.library_sync.providers.base import (
 )
 from services.library_sync.providers.common import (
     client,
+    to_date,
     to_datetime,
     to_float,
     year_of,
@@ -39,6 +40,8 @@ class SimklProvider(LibraryProvider):
     label = "Simkl"
     media_types = [MediaTypeEnum.MOVIES, MediaTypeEnum.SERIES, MediaTypeEnum.ANIME]
     auth_kind = "oauth"
+    trusted_external_id = True
+    creates_logs = True
 
     def statuses(self) -> list[SourceStatus]:
         return [
@@ -265,10 +268,12 @@ class SimklProvider(LibraryProvider):
         rating = to_float(row.get("user_rating"))
         if rating is not None and rating <= 0:
             rating = None
+        # O Logged usa AniList para anime e TMDB para filmes/séries. Os demais
+        # ids continuam em external_refs para o matcher resolver.
         if media_type == MediaTypeEnum.ANIME:
-            external_id = ids.get("anilist") or ids.get("tmdb") or ids.get("mal")
+            external_id = ids.get("anilist")
         else:
-            external_id = ids.get("tmdb") or ids.get("imdb")
+            external_id = ids.get("tmdb")
         external_id = str(external_id) if external_id else None
         title = obj.get("title") or obj.get("name") or row.get("title") or str(simkl_id)
         year = year_of(obj.get("year") or obj.get("released") or obj.get("release_date"))
@@ -291,4 +296,5 @@ class SimklProvider(LibraryProvider):
             },
             source_url=f"https://simkl.com/{'movies' if media_type == MediaTypeEnum.MOVIES else 'tv' if media_type == MediaTypeEnum.SERIES else 'anime'}/{simkl_id}",
             updated_at=to_datetime(row.get("last_watched_at")),
+            watched_at=to_date(row.get("last_watched_at")),
         )

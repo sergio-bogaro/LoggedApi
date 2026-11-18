@@ -4,6 +4,8 @@ A biblioteca pública é lida sem autenticação. O Kitsu usa ids próprios; o
 matcher resolve para o AniList pelo título quando não há mapeamento direto.
 """
 
+from datetime import date
+
 from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.library_sync import LibraryConnection
 from services.library_sync.providers.base import (
@@ -29,6 +31,7 @@ class KitsuProvider(LibraryProvider):
     label = "Kitsu"
     media_types = [MediaTypeEnum.ANIME, MediaTypeEnum.MANGA]
     auth_kind = "username"
+    creates_logs = True
 
     def statuses(self) -> list[SourceStatus]:
         return [
@@ -125,11 +128,19 @@ class KitsuProvider(LibraryProvider):
         if rating20 and rating20 > 0:
             rating = round(rating20 / 2.0, 1)
         source_id = f"kitsu:{entry.get('id')}"
+        status = str(attrs.get("status") or "planned")
+        started = to_date(attrs.get("startedAt"))
+        finished = to_date(attrs.get("finishedAt"))
+        watched = (
+            None
+            if status == "planned"
+            else (finished or started or date.today())
+        )
         items[source_id] = SourceItem(
             source_id=source_id,
             media_type=media_type,
             title=title,
-            status=str(attrs.get("status") or "planned"),
+            status=status,
             year=year_of(start) if start else None,
             rating=rating,
             review=(attrs.get("notes") or None),
@@ -138,4 +149,5 @@ class KitsuProvider(LibraryProvider):
             release_date=start,
             external_refs={"kitsuId": media_id, "kitsuEntryId": str(entry.get("id"))},
             source_url=f"https://kitsu.app/{'anime' if media_type == MediaTypeEnum.ANIME else 'manga'}/{media_id}",
+            watched_at=watched,
         )

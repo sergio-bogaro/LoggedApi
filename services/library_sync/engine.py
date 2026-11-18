@@ -39,9 +39,7 @@ from services.library_sync.registry import get_provider
 from services.library_sync.suggestions import (
     load_suggestions,
     pending_count,
-    record_applied_suggestion,
     stage_suggestion,
-    suggestion_refs,
 )
 
 _STATUS_ACTIONS = {status.value for status in MediaStatusEnum}
@@ -153,14 +151,6 @@ def _apply_notes(media: Media, item: SourceItem) -> bool:
     return changed
 
 
-def _release_datetime(item: SourceItem) -> datetime | None:
-    if item.release_date is not None:
-        return datetime.combine(item.release_date, datetime.min.time())
-    if item.year:
-        return datetime(item.year, 1, 1)
-    return None
-
-
 def _has_media_log(
     db: Session, media_id: int, day, status: MediaStatusEnum
 ) -> bool:
@@ -246,7 +236,8 @@ class LibrarySyncEngine:
         )
         suggestions = load_suggestions(db, connection.user_id, connection.provider)
         cursor = provider.cursor(connection)
-        baseline_missing = set(cursor.get("baseline_missing") or [])
+        # Cursor antigo do baseline: não bloqueia mais nenhum título.
+        cursor.pop("baseline_missing", None)
         snapshot = await provider.fetch(connection, cursor)
         _report(
             progress,
@@ -272,7 +263,7 @@ class LibrarySyncEngine:
             return summary
 
         summary["library"] = len(snapshot.items)
-        baseline = connection.baseline_completed_at is None
+        first_sync = connection.baseline_completed_at is None
         seen: set[str] = set()
 
         for index, item in enumerate(snapshot.items, start=1):
@@ -291,8 +282,6 @@ class LibrarySyncEngine:
                     media_by_external,
                     media_by_title,
                     suggestions,
-                    baseline,
-                    baseline_missing,
                     summary,
                     run_at,
                 )
@@ -308,7 +297,7 @@ class LibrarySyncEngine:
             )
 
         if (
-            not baseline
+            not first_sync
             and snapshot.full
             and provider.tracks_removals
         ):
@@ -318,18 +307,16 @@ class LibrarySyncEngine:
                     db, connection, links, removed, summary
                 )
 
-        if baseline and not summary["errors"]:
+        # Só conclui a primeira execução quando ela terminou sem erros. Até lá,
+        # a remoção automática continua desligada para não apagar vínculos por
+        # causa de uma leitura parcial.
+        if first_sync and not summary["errors"]:
             connection.baseline_completed_at = utcnow()
             summary["baseline"] = True
 
-        # Provedores em modo revisão não usam mais baseline_missing: um match
-        # exato é criado e o restante vai para a fila de revisão.
-        if provider.review_baseline:
-            baseline_missing.clear()
         summary["pendingReview"] = pending_count(
             db, connection.user_id, connection.provider
         )
-        snapshot.cursor["baseline_missing"] = sorted(baseline_missing)
         provider.set_cursor(connection, snapshot.cursor)
         connection.last_sync_at = utcnow()
         connection.last_sync_status = "ok" if not summary["errors"] else "partial"
@@ -361,8 +348,6 @@ class LibrarySyncEngine:
         media_by_external: dict[tuple[MediaTypeEnum, str], Media],
         media_by_title: dict[tuple[MediaTypeEnum, str], Media],
         suggestions: dict,
-        baseline: bool,
-        baseline_missing: set[str],
         summary: dict,
         run_at: datetime,
     ) -> None:
@@ -393,28 +378,10 @@ class LibrarySyncEngine:
                 link.title = item.title
                 link.last_seen_at = utcnow()
                 db.flush()
-            elif baseline:
-                baseline_missing.add(item.source_id)
             return
 
-        created_link = False
-        if link is None:
-            link = LibrarySyncLink(
-                user_id=connection.user_id,
-                provider=connection.provider,
-                source_id=item.source_id,
-                media_type=item.media_type,
-                title=item.title,
-                source_status=item.status,
-                last_source_status=None,
-            )
-            db.add(link)
-            db.flush()
-            links[item.source_id] = link
-            created_link = True
-
-        media = media_by_id.get(link.media_id) if link.media_id else None
-        if media is None and link.media_id is not None:
+        media = media_by_id.get(link.media_id) if link and link.media_id else None
+        if media is None and link is not None and link.media_id is not None:
             media = _get_media(db, link.media_id)
             if media is not None:
                 media_by_id[media.id] = media
@@ -424,23 +391,12 @@ class LibrarySyncEngine:
                 item, media_by_external, media_by_title
             )
 
-        # Depois do baseline, todo provedor usa a fila: match exato cria direto,
-        # match duvidoso vira sugestão. O baseline dos provedores grandes
-        # continua apenas vinculando o que já existe.
-        use_review = (
-            provider.review_baseline
-            or suggestion is not None
-            or (not baseline and item.source_id not in baseline_missing)
-        )
-        if media is None and use_review:
+        if media is None:
             media = await self._resolve_review_item(
                 db,
                 connection,
                 provider,
                 item,
-                link,
-                media_by_external,
-                media_by_title,
                 suggestion,
                 suggestions,
                 action,
@@ -450,47 +406,31 @@ class LibrarySyncEngine:
                 run_at,
             )
             if media is None:
-                if created_link:
-                    db.delete(link)
-                    links.pop(item.source_id, None)
-                    db.flush()
+                if link is not None:
+                    link.source_status = item.status
+                    link.title = item.title
+                    link.last_seen_at = utcnow()
                 summary["missing"] += 1
                 if len(summary["missingTitles"]) < _MAX_LIST:
                     summary["missingTitles"].append(item.title)
-                return
-
-        if media is None:
-            if baseline:
-                if created_link:
-                    db.delete(link)
-                    links.pop(item.source_id, None)
-                    db.flush()
-                baseline_missing.add(item.source_id)
-                summary["missing"] += 1
-                if len(summary["missingTitles"]) < _MAX_LIST:
-                    summary["missingTitles"].append(item.title)
-                return
-            if item.source_id in baseline_missing:
-                summary["missing"] += 1
-                if len(summary["missingTitles"]) < _MAX_LIST:
-                    summary["missingTitles"].append(item.title)
-                link.source_status = item.status
-                link.title = item.title
-                link.last_seen_at = utcnow()
                 db.flush()
                 return
-            link.source_status = item.status
-            link.title = item.title
-            link.last_seen_at = utcnow()
-            summary["unmatched"] += 1
-            if len(summary["unmatchedTitles"]) < _MAX_LIST:
-                summary["unmatchedTitles"].append(
-                    {"title": item.title, "reason": link.match_error}
-                )
-            db.flush()
-            return
 
-        baseline_missing.discard(item.source_id)
+        if link is None:
+            link = LibrarySyncLink(
+                user_id=connection.user_id,
+                provider=connection.provider,
+                source_id=item.source_id,
+                media_id=media.id,
+                media_type=item.media_type,
+                title=item.title,
+                source_status=item.status,
+                last_source_status=None,
+            )
+            db.add(link)
+            db.flush()
+            links[item.source_id] = link
+
         if suggestion is not None and suggestion.review_state == "pending":
             suggestion.review_state = "approved"
             suggestion.media_id = media.id
@@ -505,6 +445,11 @@ class LibrarySyncEngine:
         media_by_title.setdefault(
             (item.media_type, normalize_title(media.title)), media
         )
+
+        # Mídias antigas criadas por um caminho rápido sem metadata podem estar
+        # sem capa. Busca os detalhes uma vez e preenche só o que estiver vazio.
+        if not media.cover_url and not item.cover_url:
+            await self._enrich_media(db, connection, media, item, summary)
 
         if _apply_notes(media, item):
             summary["notesUpdated"] += 1
@@ -577,13 +522,25 @@ class LibrarySyncEngine:
         return refs
 
     @staticmethod
+    def _candidate_provider(media_type: MediaTypeEnum, fallback: str) -> str:
+        if media_type in (MediaTypeEnum.ANIME, MediaTypeEnum.MANGA):
+            return "anilist"
+        if media_type in (MediaTypeEnum.MOVIES, MediaTypeEnum.SERIES):
+            return "tmdb"
+        if media_type == MediaTypeEnum.BOOK:
+            return "openlibrary"
+        if media_type == MediaTypeEnum.GAME:
+            return "igdb"
+        return fallback
+
+    @classmethod
     def _synthetic_candidate(
-        connection: LibraryConnection, item: SourceItem
+        cls, connection: LibraryConnection, item: SourceItem
     ) -> ImportCandidate | None:
         if not item.external_id:
             return None
         return ImportCandidate(
-            provider=connection.provider,
+            provider=cls._candidate_provider(item.media_type, connection.provider),
             external_id=str(item.external_id),
             media_type=item.media_type,
             title=item.title,
@@ -591,21 +548,18 @@ class LibrarySyncEngine:
             cover_url=item.cover_url,
             overview=item.overview,
             release_date=item.release_date,
-            score=0.0,
+            score=1.0,
         )
 
     @staticmethod
-    def _is_perfect_match(
-        item: SourceItem,
-        candidate: ImportCandidate | None,
-        status: str | None,
+    def _is_exact_match(
+        item: SourceItem, candidate: ImportCandidate | None
     ) -> bool:
         if candidate is None:
             return False
         if item.external_id and str(candidate.external_id) == str(item.external_id):
             return True
-        # Mesmo título e ano, sem concorrente próximo, também é match perfeito.
-        return status == "matched" and candidate.score >= 1.0
+        return candidate.score >= 1.0
 
     async def _match_review_item(
         self,
@@ -667,15 +621,46 @@ class LibrarySyncEngine:
             result.status,
         )
 
+    async def _enrich_media(
+        self,
+        db: Session,
+        connection: LibraryConnection,
+        media: Media,
+        item: SourceItem,
+        summary: dict,
+    ) -> None:
+        """Preenche capa/descrição de uma mídia já vinculada que está incompleta."""
+        if not (item.external_id or item.external_refs):
+            return
+        _, candidate, _candidates, _error, _status = await self._match_review_item(
+            db, connection, item
+        )
+        if candidate is None or not media.external_id:
+            return
+        if str(candidate.external_id) != str(media.external_id):
+            return
+
+        changed = False
+        if not media.cover_url and candidate.cover_url:
+            media.cover_url = candidate.cover_url
+            changed = True
+        if not media.description and candidate.overview:
+            media.description = candidate.overview
+            changed = True
+        if media.release_date is None and candidate.release_date is not None:
+            media.release_date = datetime.combine(
+                candidate.release_date, datetime.min.time()
+            )
+            changed = True
+        if changed:
+            summary["notesUpdated"] += 1
+
     async def _resolve_review_item(
         self,
         db: Session,
         connection: LibraryConnection,
         provider: LibraryProvider,
         item: SourceItem,
-        link: LibrarySyncLink,
-        media_by_external: dict[tuple[MediaTypeEnum, str], Media],
-        media_by_title: dict[tuple[MediaTypeEnum, str], Media],
         suggestion,
         suggestions: dict,
         action: str,
@@ -684,7 +669,11 @@ class LibrarySyncEngine:
         summary: dict,
         run_at: datetime,
     ) -> Media | None:
-        """Cria direto em match exato; caso contrário, alimenta a revisão."""
+        """Nunca cria mídia: alimenta a fila de revisão.
+
+        A única exceção é quando o matcher encontra uma mídia que já existe no
+        Logged; nesse caso o item é apenas vinculado.
+        """
         if suggestion is not None and suggestion.review_state == "pending":
             stage_suggestion(
                 db,
@@ -705,54 +694,41 @@ class LibrarySyncEngine:
             suggestion.review_state = "pending"
             suggestion.decided_at = None
 
-        media, candidate, candidates, error, match_status = (
-            await self._match_review_item(db, connection, item)
-        )
-        if media is not None:
-            return media
+        candidate: ImportCandidate | None = None
+        candidates: list[ImportCandidate] = []
+        error: str | None = None
+        match_status: str | None = None
 
-        if candidate is None:
+        if (
+            provider.trusted_external_id
+            and item.external_id
+            and item.cover_url
+        ):
+            # O provider já entregou o ID usado pelo Logged e os metadados
+            # visuais; não há por que gastar uma chamada de metadata.
             candidate = self._synthetic_candidate(connection, item)
-
-        if self._is_perfect_match(item, candidate, match_status):
-            media = self._create_media(db, connection.user_id, item, candidate)
-            media_by_external[(item.media_type, str(candidate.external_id))] = media
-            media_by_title.setdefault(
-                (item.media_type, normalize_title(media.title)), media
+            candidates = [candidate] if candidate is not None else []
+            match_status = "matched"
+        else:
+            media, candidate, candidates, error, match_status = (
+                await self._match_review_item(db, connection, item)
             )
-            summary["created"] += 1
-            record_applied_suggestion(
-                db,
-                suggestions,
-                user_id=connection.user_id,
-                provider=connection.provider,
-                source_id=item.source_id,
-                media_id=media.id,
-                media_type=item.media_type,
-                title=item.title,
-                source_status=item.status,
-                source_label=source_label,
-                action=action,
-                target_status=target_status,
-                candidate=candidate,
-                candidates=candidates or [candidate],
-                origin="auto",
-                year=item.year,
-                rating=item.rating,
-                review=item.review,
-                watched_date=item.watched_at,
-                source_url=item.source_url,
-                refs=suggestion_refs(connection, item),
-                sync_run_at=run_at,
-            )
-            return media
+            if media is not None:
+                return media
+            if candidate is None and item.external_id:
+                candidate = self._synthetic_candidate(connection, item)
+                if candidate is not None and not candidates:
+                    candidates = [candidate]
 
         if suggestion is None:
             summary["reviewStaged"] += 1
         if candidate is None:
             error = error or "Sem candidato de metadata; revise antes de adicionar."
-        else:
-            error = error or "Match não exato; revise antes de adicionar."
+        elif error is None and (
+            match_status == "ambiguous"
+            or not self._is_exact_match(item, candidate)
+        ):
+            error = "Match não exato; revise antes de adicionar."
         stage_suggestion(
             db,
             connection,
@@ -767,29 +743,6 @@ class LibrarySyncEngine:
             sync_run_at=run_at,
         )
         return None
-
-    def _create_media(
-        self,
-        db: Session,
-        user_id: int,
-        item: SourceItem,
-        candidate: ImportCandidate,
-    ) -> Media:
-        media = Media(
-            user_id=user_id,
-            external_id=str(candidate.external_id),
-            title=candidate.title or item.title,
-            type=item.media_type,
-            description=candidate.overview or item.overview,
-            cover_url=candidate.cover_url or item.cover_url,
-            release_date=candidate.release_date
-            and datetime.combine(candidate.release_date, datetime.min.time())
-            or _release_datetime(item),
-            status=None,
-        )
-        db.add(media)
-        db.flush()
-        return media
 
     def _handle_removed(
         self,

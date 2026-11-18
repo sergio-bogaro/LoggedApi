@@ -4,6 +4,8 @@ Lê as listas públicas com `X-MAL-CLIENT-ID` (sem OAuth de usuário) e resolve 
 id do MAL para o id do AniList, que é o `external_id` do Logged.
 """
 
+from datetime import date
+
 from config import settings
 from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.library_sync import LibraryConnection
@@ -32,6 +34,8 @@ class MalProvider(LibraryProvider):
     label = "MyAnimeList"
     media_types = [MediaTypeEnum.ANIME, MediaTypeEnum.MANGA]
     auth_kind = "username"
+    trusted_external_id = True
+    creates_logs = True
 
     def statuses(self) -> list[SourceStatus]:
         return [
@@ -132,12 +136,20 @@ class MalProvider(LibraryProvider):
         start = to_date(node.get("start_date"))
         score = to_float(status_block.get("score"))
         rating = round(score, 1) if score and score > 0 else None
+        status = str(status_block.get("status") or "plan_to_watch")
+        started = to_date(status_block.get("start_date"))
+        finished = to_date(status_block.get("finish_date"))
+        watched = (
+            None
+            if status in ("plan_to_watch", "plan_to_read")
+            else (finished or started or date.today())
+        )
         source_id = f"mal:{mal_id}"
         items[source_id] = SourceItem(
             source_id=source_id,
             media_type=media_type,
             title=title,
-            status=str(status_block.get("status") or "plan_to_watch"),
+            status=status,
             year=year_of(start) if start else None,
             rating=rating,
             review=(status_block.get("comments") or None),
@@ -147,6 +159,7 @@ class MalProvider(LibraryProvider):
             external_id=None,
             external_refs={"malId": str(mal_id)},
             source_url=f"https://myanimelist.net/{'anime' if media_type == MediaTypeEnum.ANIME else 'manga'}/{mal_id}",
+            watched_at=watched,
         )
 
     async def _resolve_external_ids(self, items: dict[str, SourceItem]) -> None:

@@ -41,8 +41,8 @@ class LetterboxdProvider(LibraryProvider):
     media_types = [MediaTypeEnum.MOVIES]
     auth_kind = "username"
     tracks_removals = False
-    # O RSS é pequeno (até 50 itens); revisar/criar já no primeiro sync.
-    review_baseline = True
+    trusted_external_id = True
+    sync_partial = True
     creates_logs = True
 
     def statuses(self) -> list[SourceStatus]:

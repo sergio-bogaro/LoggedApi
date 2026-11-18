@@ -34,6 +34,7 @@ class OpenLibraryProvider(LibraryProvider):
     label = "Open Library"
     media_types = [MediaTypeEnum.BOOK]
     auth_kind = "username"
+    trusted_external_id = True
 
     def statuses(self) -> list[SourceStatus]:
         return [

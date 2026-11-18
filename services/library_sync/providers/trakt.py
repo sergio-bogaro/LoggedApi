@@ -18,6 +18,7 @@ from services.library_sync.providers.base import (
 )
 from services.library_sync.providers.common import (
     client,
+    to_date,
     to_datetime,
     to_float,
     year_of,
@@ -38,6 +39,8 @@ class TraktProvider(LibraryProvider):
     label = "Trakt"
     media_types = [MediaTypeEnum.MOVIES, MediaTypeEnum.SERIES]
     auth_kind = "oauth"
+    trusted_external_id = True
+    creates_logs = True
 
     def statuses(self) -> list[SourceStatus]:
         return [
@@ -277,6 +280,7 @@ class TraktProvider(LibraryProvider):
                 },
                 source_url=f"https://trakt.tv/movies/{ids.get('slug') or trakt_id}",
                 updated_at=to_datetime(row.get("last_watched_at") or row.get("listed_at")),
+                watched_at=to_date(row.get("last_watched_at")),
             )
 
         def add_show(row: dict, status: str) -> None:
@@ -307,6 +311,7 @@ class TraktProvider(LibraryProvider):
                 },
                 source_url=f"https://trakt.tv/shows/{ids.get('slug') or trakt_id}",
                 updated_at=to_datetime(row.get("last_watched_at") or row.get("listed_at")),
+                watched_at=to_date(row.get("last_watched_at")),
             )
 
         for row in watch_movies:

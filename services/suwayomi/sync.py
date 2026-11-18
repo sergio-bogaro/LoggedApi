@@ -7,9 +7,8 @@ backlog no Logged. Capítulos e progresso não são lidos.
 import asyncio
 import json
 import threading
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable
-from urllib.parse import urljoin
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, noload
@@ -26,7 +25,6 @@ from services.importer.matcher import matcher
 from services.importer.text import normalize_title, search_title
 from services.library_sync.suggestions import (
     load_suggestions,
-    record_applied_suggestion,
     stage_suggestion_values,
 )
 from services.suwayomi.categories import (
@@ -53,14 +51,6 @@ def _report(progress: ProgressCallback | None, **fields) -> None:
 def utcnow() -> datetime:
     """Agora em UTC, sem timezone, no mesmo formato do SQLite do app."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def _to_datetime(value: date | datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value
-    return datetime.combine(value, time.min)
 
 
 def _from_unix(value: object) -> datetime | None:
@@ -206,36 +196,6 @@ def _remove_owned_backlog(
     link.backlog_owned = False
 
 
-def _create_media(
-    db: Session,
-    user_id: int,
-    manga: dict,
-    candidate: ImportCandidate,
-    status: MediaStatusEnum | None,
-    base_url: str,
-) -> Media:
-    release_date = _to_datetime(candidate.release_date)
-    if release_date is None and candidate.year:
-        release_date = datetime(int(candidate.year), 1, 1)
-
-    thumbnail = manga.get("thumbnailUrl")
-    fallback_cover = urljoin(base_url + "/", thumbnail) if thumbnail else None
-
-    media = Media(
-        user_id=user_id,
-        external_id=str(candidate.external_id),
-        title=candidate.title or manga.get("title") or "",
-        type=MediaTypeEnum.MANGA,
-        description=candidate.overview or manga.get("description"),
-        cover_url=candidate.cover_url or fallback_cover,
-        release_date=release_date,
-        status=status,
-    )
-    db.add(media)
-    db.flush()
-    return media
-
-
 def _apply_action(
     db: Session,
     user_id: int,
@@ -335,56 +295,6 @@ def _approve_suggestion(
     suggestion.media_id = media.id
     suggestion.error = None
     suggestion.decided_at = utcnow()
-
-
-def _record_created_suggestion(
-    db: Session,
-    suggestions: dict[str, LibrarySyncSuggestion],
-    *,
-    user_id: int,
-    link: SuwayomiMangaLink,
-    manga: dict,
-    title: str,
-    action: str,
-    status: MediaStatusEnum | None,
-    candidate: ImportCandidate,
-    candidates: list[ImportCandidate] | None,
-    media: Media,
-    sync_run_at: datetime,
-) -> None:
-    source_id = str(link.suwayomi_manga_id)
-    real_url = (manga.get("realUrl") or manga.get("url") or "").strip()
-    refs = {"suwayomiId": source_id}
-    if real_url:
-        refs["suwayomiUrl"] = real_url
-
-    watched_date: date | None = None
-    if status is not None:
-        in_library_at, last_read_at = _manga_dates(manga)
-        moment = last_read_at or in_library_at or utcnow()
-        watched_date = moment.date()
-
-    record_applied_suggestion(
-        db,
-        suggestions,
-        user_id=user_id,
-        provider="suwayomi",
-        source_id=source_id,
-        media_id=media.id,
-        media_type=MediaTypeEnum.MANGA,
-        title=title,
-        source_status=_suggestion_action(action, status),
-        source_label=_suggestion_action(action, status),
-        action=_suggestion_action(action, status),
-        target_status=status,
-        candidate=candidate,
-        candidates=candidates or [candidate],
-        origin="auto",
-        watched_date=watched_date,
-        source_url=real_url or None,
-        refs=refs,
-        sync_run_at=sync_run_at,
-    )
 
 
 def _match_error(result: ImportMatchResult) -> str:
@@ -607,8 +517,6 @@ class SuwayomiSyncService:
                 summary["datedItems"] += 1
 
             if link is None:
-                created_candidate: ImportCandidate | None = None
-                created_candidates: list[ImportCandidate] | None = None
                 media = existing_by_title.get(normalize_title(title))
                 if media is None:
                     try:
@@ -620,22 +528,12 @@ class SuwayomiSyncService:
 
                     if result.status == "already_in_library" and result.existing_media_id:
                         media = _get_media(db, result.existing_media_id)
-                    elif result.status == "matched" and result.match is not None:
-                        media = _create_media(
-                            db,
-                            user_id,
-                            manga,
-                            result.match,
-                            status if action == ACTION_STATUS else None,
-                            account.base_url,
-                        )
-                        created_candidate = result.match
-                        created_candidates = result.candidates
-                        media_by_id[media.id] = media
-                        existing_by_title[normalize_title(media.title)] = media
-                        summary["created"] += 1
                     else:
-                        error = _match_error(result)
+                        error = (
+                            None
+                            if result.status == "matched" and result.match is not None
+                            else _match_error(result)
+                        )
                         link = SuwayomiMangaLink(
                             user_id=user_id,
                             suwayomi_manga_id=suwayomi_id,
@@ -648,6 +546,7 @@ class SuwayomiSyncService:
                         )
                         db.add(link)
                         links[suwayomi_id] = link
+                        has_candidate = result.match is not None
                         _stage_review_suggestion(
                             db,
                             suggestions,
@@ -657,21 +556,16 @@ class SuwayomiSyncService:
                             title=title,
                             action=action,
                             status=status,
-                            candidate=(
-                                result.match
-                                if result.status == "ambiguous"
-                                else None
-                            ),
+                            candidate=result.match if has_candidate else None,
                             candidates=(
-                                result.candidates
-                                if result.status == "ambiguous"
-                                else None
+                                result.candidates if has_candidate else None
                             ),
                             error=error,
                             sync_run_at=run_at,
                             summary=summary,
                         )
-                        self._append_unmatched(summary, title, error)
+                        if result.status != "matched":
+                            self._append_unmatched(summary, title, error or "")
                         continue
 
                 link = SuwayomiMangaLink(
@@ -686,21 +580,6 @@ class SuwayomiSyncService:
                 if media is not None:
                     existing_by_title.setdefault(normalize_title(media.title), media)
                     _approve_suggestion(suggestions, suwayomi_id, media)
-                    if created_candidate is not None:
-                        _record_created_suggestion(
-                            db,
-                            suggestions,
-                            user_id=user_id,
-                            link=link,
-                            manga=manga,
-                            title=title,
-                            action=action,
-                            status=status,
-                            candidate=created_candidate,
-                            candidates=created_candidates,
-                            media=media,
-                            sync_run_at=run_at,
-                        )
 
             if link.media_id is None:
                 link.last_seen_at = now
@@ -894,35 +773,14 @@ class SuwayomiSyncService:
 
             if result.status == "already_in_library" and result.existing_media_id:
                 media = _get_media(db, result.existing_media_id)
-            elif result.status == "matched" and result.match is not None:
-                media = _create_media(
-                    db,
-                    user_id,
-                    manga,
-                    result.match,
-                    status if action == ACTION_STATUS else None,
-                    account.base_url,
-                )
-                media_by_id[media.id] = media
-                existing_by_title[normalize_title(media.title)] = media
-                summary["created"] += 1
-                _record_created_suggestion(
-                    db,
-                    suggestions,
-                    user_id=user_id,
-                    link=link,
-                    manga=manga,
-                    title=title,
-                    action=action,
-                    status=status,
-                    candidate=result.match,
-                    candidates=result.candidates,
-                    media=media,
-                    sync_run_at=run_at,
-                )
             else:
-                error = _match_error(result)
+                error = (
+                    None
+                    if result.status == "matched" and result.match is not None
+                    else _match_error(result)
+                )
                 link.match_error = error
+                has_candidate = result.match is not None
                 _stage_review_suggestion(
                     db,
                     suggestions,
@@ -932,14 +790,8 @@ class SuwayomiSyncService:
                     title=title,
                     action=action,
                     status=status,
-                    candidate=(
-                        result.match if result.status == "ambiguous" else None
-                    ),
-                    candidates=(
-                        result.candidates
-                        if result.status == "ambiguous"
-                        else None
-                    ),
+                    candidate=result.match if has_candidate else None,
+                    candidates=result.candidates if has_candidate else None,
                     error=error,
                     sync_run_at=run_at,
                     summary=summary,

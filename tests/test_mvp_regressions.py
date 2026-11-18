@@ -747,17 +747,18 @@ class SuwayomiTests(unittest.TestCase):
             db.commit()
             db.refresh(link)
 
-            media = (
-                db.query(Media)
-                .filter_by(user_id=user_id, external_id="unknown-1")
-                .first()
-            )
-            self.assertIsNotNone(media)
-            self.assertEqual(link.media_id, media.id)
+            self.assertIsNone(link.media_id)
             self.assertEqual(link.match_attempts, 1)
             self.assertIsNotNone(link.last_match_attempt_at)
-            self.assertEqual(summary["created"], 1)
-            self.assertIn("Unknown Manga", summary["pendingResolved"])
+            self.assertEqual(summary["created"], 0)
+            self.assertEqual(summary["reviewStaged"], 1)
+            self.assertNotIn("Unknown Manga", summary["pendingResolved"])
+            self.assertEqual(
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id="unknown-1")
+                .count(),
+                0,
+            )
             suggestion = (
                 db.query(LibrarySyncSuggestion)
                 .filter_by(
@@ -767,9 +768,28 @@ class SuwayomiTests(unittest.TestCase):
                 )
                 .one()
             )
+            self.assertEqual(suggestion.review_state, "pending")
+            self.assertIsNotNone(suggestion.candidate_json)
+            self.assertIsNone(suggestion.media_id)
+
+            response = self.client.post(
+                "/api/integrations/suggestions/approve",
+                json={"userId": user_id, "ids": [suggestion.id]},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["approved"], 1)
+
+            db.expire_all()
+            media = (
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id="unknown-1")
+                .one()
+            )
+            link = db.get(SuwayomiMangaLink, link.id)
+            suggestion = db.get(LibrarySyncSuggestion, suggestion.id)
+            self.assertEqual(link.media_id, media.id)
             self.assertEqual(suggestion.review_state, "approved")
-            self.assertEqual(suggestion.origin, "auto")
-            self.assertIsNotNone(suggestion.sync_run_at)
+            self.assertEqual(suggestion.origin, "review")
             self.assertEqual(suggestion.media_id, media.id)
         finally:
             db.close()
@@ -1143,6 +1163,21 @@ class SuwayomiTests(unittest.TestCase):
                         candidates_json=candidates_to_json([candidate]),
                         sync_run_at=datetime(2026, 1, 2, 0, 0),
                     ),
+                    LibrarySyncSuggestion(
+                        user_id=user_id,
+                        provider="suwayomi",
+                        source_id="9005",
+                        media_type=MediaTypeEnum.MANGA,
+                        title="Pending Validation",
+                        source_status="in_progress",
+                        action="in_progress",
+                        target_status=MediaStatusEnum.IN_PROGRESS,
+                        review_state="pending",
+                        candidate_json=candidate_to_json(candidate),
+                        candidates_json=candidates_to_json([candidate]),
+                        error="Match não exato; revise antes de adicionar.",
+                        sync_run_at=datetime(2026, 1, 2, 0, 0),
+                    ),
                 ]
             )
             db.commit()
@@ -1157,7 +1192,10 @@ class SuwayomiTests(unittest.TestCase):
         self.assertEqual(body["total"], 3)
         self.assertEqual(body["counts"]["approved"], 3)
         self.assertEqual(body["counts"]["lastSync"], 1)
+        self.assertEqual(body["counts"]["pending"], 2)
+        self.assertEqual(body["counts"]["ready"], 1)
         self.assertEqual(body["counts"]["attention"], 1)
+        self.assertEqual(body["counts"]["noMatch"], 0)
 
         latest = self.client.get(
             f"/api/integrations/suggestions?user_id={user_id}&last_sync=true"
@@ -1173,7 +1211,7 @@ class SuwayomiTests(unittest.TestCase):
             f"/api/integrations/suggestions?user_id={user_id}&state=all"
         )
         self.assertEqual(everything.status_code, 200, everything.text)
-        self.assertEqual(everything.json()["total"], 4)
+        self.assertEqual(everything.json()["total"], 5)
 
     def test_suggestion_candidate_endpoint(self) -> None:
         from database import SessionLocal
@@ -1377,6 +1415,7 @@ class SuwayomiTests(unittest.TestCase):
     def test_anilist_provider_parses_public_list(self) -> None:
         import asyncio
         import json
+        from datetime import date
         from unittest.mock import patch
 
         from models.library_sync import LibraryConnection
@@ -1392,12 +1431,15 @@ class SuwayomiTests(unittest.TestCase):
             "MediaListCollection": {
                 "lists": [
                     {
+                        "isCustomList": False,
                         "entries": [
                             {
                                 "status": "CURRENT",
                                 "score": 8.5,
                                 "notes": "nota",
                                 "updatedAt": "2026-01-01T00:00:00Z",
+                                "startedAt": {"year": 2020, "month": 5, "day": 1},
+                                "completedAt": {"year": 2020, "month": 5, "day": 3},
                                 "media": {
                                     "id": 123,
                                     "title": {"romaji": "Romaji", "english": "English"},
@@ -1406,8 +1448,20 @@ class SuwayomiTests(unittest.TestCase):
                                     "startDate": {"year": 2020, "month": 4, "day": 2},
                                 },
                             }
-                        ]
-                    }
+                        ],
+                    },
+                    {
+                        "isCustomList": True,
+                        "entries": [
+                            {
+                                "status": "COMPLETED",
+                                "media": {
+                                    "id": 999,
+                                    "title": {"romaji": "Custom"},
+                                },
+                            }
+                        ],
+                    },
                 ]
             }
         }
@@ -1426,6 +1480,49 @@ class SuwayomiTests(unittest.TestCase):
         self.assertEqual(item.status, "CURRENT")
         self.assertEqual(item.rating, 8.5)
         self.assertEqual(item.year, 2020)
+        self.assertEqual(item.watched_at, date(2020, 5, 3))
+
+    def test_simkl_anime_only_trusts_anilist_id(self) -> None:
+        from datetime import date
+
+        from models.enums import MediaTypeEnum
+        from services.library_sync.providers.simkl import SimklProvider
+
+        provider = SimklProvider()
+        items = {}
+        provider._add(
+            items,
+            {
+                "status": "watching",
+                "last_watched_at": "2024-01-02T10:00:00Z",
+                "anime": {
+                    "title": "Anime via TMDB",
+                    "ids": {"simkl": 1, "tmdb": 22, "mal": 33},
+                },
+            },
+            MediaTypeEnum.ANIME,
+            "anime",
+        )
+        item = items["simkl:anime:1"]
+        self.assertIsNone(item.external_id)
+        self.assertEqual(item.external_refs["tmdbId"], "22")
+        self.assertEqual(item.external_refs["malId"], "33")
+        self.assertEqual(item.watched_at, date(2024, 1, 2))
+
+        items = {}
+        provider._add(
+            items,
+            {
+                "status": "completed",
+                "anime": {
+                    "title": "Anime via AniList",
+                    "ids": {"simkl": 2, "anilist": 44, "tmdb": 22},
+                },
+            },
+            MediaTypeEnum.ANIME,
+            "anime",
+        )
+        self.assertEqual(items["simkl:anime:2"].external_id, "44")
 
     def test_integration_api_config_and_mappings(self) -> None:
         user_id = self._user()
@@ -1435,6 +1532,9 @@ class SuwayomiTests(unittest.TestCase):
         self.assertIn("anilist", providers)
         self.assertIn("letterboxd", providers)
         self.assertIn("trakt", providers)
+        self.assertTrue(providers["letterboxd"]["syncPartial"])
+        self.assertFalse(providers["anilist"]["syncPartial"])
+        self.assertFalse(providers["trakt"]["syncPartial"])
 
         response = self.client.put(
             "/api/integrations/anilist/config",
@@ -2366,6 +2466,7 @@ class LibrarySyncTests(unittest.TestCase):
             label = "Fake"
             media_types = [MediaTypeEnum.MOVIES]
             auth_kind = "username"
+            trusted_external_id = True
 
             def statuses(self):
                 return [
@@ -2438,7 +2539,7 @@ class LibrarySyncTests(unittest.TestCase):
 
         from database import SessionLocal
         from models.enums import MediaStatusEnum, MediaTypeEnum
-        from models.library_sync import LibrarySyncLink
+        from models.library_sync import LibrarySyncLink, LibrarySyncSuggestion
         from models.media import Media
         from services.library_sync import engine as engine_module
         from services.library_sync.providers.base import SourceItem
@@ -2483,14 +2584,25 @@ class LibrarySyncTests(unittest.TestCase):
             self.assertEqual(media.status, MediaStatusEnum.DROPPED)
             self.assertEqual(media.rating, 8.0)
             self.assertEqual(summary["missing"], 1)
+            self.assertEqual(summary["reviewStaged"], 1)
             self.assertEqual(summary["created"], 0)
             self.assertTrue(summary["baseline"])
             links = db.query(LibrarySyncLink).all()
             self.assertEqual(len(links), 1)
             self.assertEqual(links[0].source_id, "s1")
             self.assertEqual(links[0].media_id, media.id)
-            self.assertIn(
-                "s2", json.loads(connection.cursor_json)["baseline_missing"]
+            self.assertNotIn("baseline_missing", json.loads(connection.cursor_json))
+            suggestion = (
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id, source_id="s2")
+                .one()
+            )
+            self.assertEqual(suggestion.review_state, "pending")
+            self.assertEqual(
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id="tmdb-2")
+                .count(),
+                0,
             )
         finally:
             db.close()
@@ -2534,13 +2646,32 @@ class LibrarySyncTests(unittest.TestCase):
             ):
                 summary = asyncio.run(engine_module.engine.sync(db, connection))
             db.expire_all()
+            self.assertEqual(summary["created"], 0)
+            self.assertEqual(summary["reviewStaged"], 1)
+            self.assertEqual(
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id="tmdb-3")
+                .count(),
+                0,
+            )
+
+            from models.library_sync import LibrarySyncSuggestion
+            from services.library_sync.suggestions import approve_suggestions
+
+            suggestion = (
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id, source_id="new-1")
+                .one()
+            )
+            result = approve_suggestions(db, user_id, [suggestion.id])
+            self.assertEqual(result["approved"], 1)
+
+            db.expire_all()
             media = (
                 db.query(Media)
                 .filter_by(user_id=user_id, external_id="tmdb-3")
                 .one()
             )
-            self.assertEqual(summary["created"], 1)
-            self.assertEqual(summary["backlogAdded"], 1)
             self.assertIsNone(media.status)
             self.assertEqual(
                 db.query(MediaListItem)
@@ -2612,6 +2743,18 @@ class LibrarySyncTests(unittest.TestCase):
                 ),
             ):
                 asyncio.run(engine_module.engine.sync(db, connection))
+
+            from models.library_sync import LibrarySyncSuggestion
+            from services.library_sync.suggestions import approve_suggestions
+
+            suggestion = (
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id, source_id="manual-1")
+                .one()
+            )
+            approve_suggestions(db, user_id, [suggestion.id])
+
+            db.expire_all()
             media = (
                 db.query(Media)
                 .filter_by(user_id=user_id, external_id="tmdb-4")
@@ -2657,7 +2800,7 @@ class LibrarySyncTests(unittest.TestCase):
 
     def _review_provider(self, items):
         provider = self._provider(items)
-        provider.review_baseline = True
+        provider.trusted_external_id = False
         provider.creates_logs = True
         return provider
 
@@ -2692,7 +2835,7 @@ class LibrarySyncTests(unittest.TestCase):
             ]
         )
 
-    def test_review_provider_auto_creates_exact_match_with_log(self) -> None:
+    def test_review_provider_stages_exact_match_and_approves_with_log(self) -> None:
         import asyncio
         from datetime import date
         from unittest.mock import patch
@@ -2739,6 +2882,34 @@ class LibrarySyncTests(unittest.TestCase):
                 summary = asyncio.run(engine_module.engine.sync(db, connection))
 
             db.expire_all()
+            self.assertEqual(summary["created"], 0)
+            self.assertEqual(summary["reviewStaged"], 1)
+            self.assertEqual(summary["missing"], 1)
+            self.assertEqual(summary["logsCreated"], 0)
+            self.assertEqual(summary["pendingReview"], 1)
+            self.assertEqual(
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id=external_id)
+                .count(),
+                0,
+            )
+            suggestion = (
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id)
+                .one()
+            )
+            self.assertEqual(suggestion.review_state, "pending")
+            self.assertIsNotNone(suggestion.sync_run_at)
+            self.assertIsNotNone(suggestion.candidates_json)
+
+            response = self.client.post(
+                "/api/integrations/suggestions/approve",
+                json={"userId": user_id, "ids": [suggestion.id]},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["approved"], 1)
+
+            db.expire_all()
             media = (
                 db.query(Media)
                 .filter_by(user_id=user_id, external_id=external_id)
@@ -2747,23 +2918,13 @@ class LibrarySyncTests(unittest.TestCase):
             self.assertEqual(media.status, MediaStatusEnum.FINISHED)
             self.assertEqual(media.rating, 9.0)
             self.assertEqual(media.review, "Great.")
-            self.assertEqual(summary["created"], 1)
-            self.assertEqual(summary["missing"], 0)
-            self.assertEqual(summary["logsCreated"], 1)
-            self.assertEqual(summary["pendingReview"], 0)
             log = db.query(MediaLog).filter_by(media_id=media.id).one()
             self.assertEqual(log.date, date(2026, 11, 1))
             self.assertEqual(log.status, MediaStatusEnum.FINISHED)
-            suggestion = (
-                db.query(LibrarySyncSuggestion)
-                .filter_by(user_id=user_id)
-                .one()
-            )
+            suggestion = db.get(LibrarySyncSuggestion, suggestion.id)
             self.assertEqual(suggestion.review_state, "approved")
-            self.assertEqual(suggestion.origin, "auto")
+            self.assertEqual(suggestion.origin, "review")
             self.assertEqual(suggestion.media_id, media.id)
-            self.assertIsNotNone(suggestion.sync_run_at)
-            self.assertIsNotNone(suggestion.candidates_json)
         finally:
             db.close()
 
@@ -3461,7 +3622,7 @@ class LibrarySyncTests(unittest.TestCase):
         finally:
             db.close()
 
-    def test_baseline_missing_is_not_staged_later(self) -> None:
+    def test_trusted_external_id_stages_without_calling_matcher(self) -> None:
         import asyncio
         from unittest.mock import patch
 
@@ -3476,11 +3637,248 @@ class LibrarySyncTests(unittest.TestCase):
         try:
             connection = self._connection(db, user_id)
             item = SourceItem(
-                source_id="baseline-missing",
+                source_id="trusted-1",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Trusted Movie",
+                status="watched",
+                external_id="tmdb-trusted",
+                cover_url="https://image.tmdb.org/t/p/w500/trusted.jpg",
+            )
+            provider = self._provider([item])
+
+            async def fail_match(*_args, **_kwargs):
+                raise AssertionError("matcher não deveria ser chamado")
+
+            with (
+                patch.object(engine_module, "get_provider", return_value=provider),
+                patch.object(engine_module.matcher, "match", new=fail_match),
+            ):
+                summary = asyncio.run(engine_module.engine.sync(db, connection))
+
+            self.assertEqual(summary["created"], 0)
+            self.assertEqual(summary["reviewStaged"], 1)
+            suggestion = (
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id, source_id="trusted-1")
+                .one()
+            )
+            self.assertEqual(suggestion.review_state, "pending")
+            self.assertIsNotNone(suggestion.candidate_json)
+            self.assertIsNone(suggestion.error)
+        finally:
+            db.close()
+
+    def test_item_without_cover_fetches_metadata_before_review(self) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from database import SessionLocal
+        from models.enums import MediaTypeEnum
+        from models.library_sync import LibrarySyncSuggestion
+        from models.media import Media
+        from schemas.import_schemas import (
+            ImportCandidate,
+            ImportMatchResponse,
+            ImportMatchResult,
+        )
+        from services.library_sync import engine as engine_module
+        from services.library_sync.providers.base import SourceItem
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            connection = self._connection(db, user_id)
+            item = SourceItem(
+                source_id="cover-1",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Cover Movie",
+                status="watched",
+                external_id="tmdb-cover",
+            )
+            provider = self._provider([item])
+
+            async def fake_match(_db, request, _tmdb_key, _igdb):
+                candidate = ImportCandidate(
+                    provider="tmdb",
+                    external_id="tmdb-cover",
+                    media_type=MediaTypeEnum.MOVIES,
+                    title="Cover Movie",
+                    year=2024,
+                    cover_url="https://image.tmdb.org/t/p/w500/cover.jpg",
+                    overview="Sinopse do filme.",
+                    score=1.0,
+                )
+                return ImportMatchResponse(
+                    results=[
+                        ImportMatchResult(
+                            key=request.items[0].key,
+                            status="matched",
+                            match=candidate,
+                            candidates=[candidate],
+                        )
+                    ]
+                )
+
+            with (
+                patch.object(engine_module, "get_provider", return_value=provider),
+                patch.object(engine_module.matcher, "match", new=fake_match),
+            ):
+                summary = asyncio.run(engine_module.engine.sync(db, connection))
+
+            self.assertEqual(summary["created"], 0)
+            self.assertEqual(summary["reviewStaged"], 1)
+            suggestion = (
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id, source_id="cover-1")
+                .one()
+            )
+            self.assertEqual(suggestion.review_state, "pending")
+            self.assertIn("cover.jpg", suggestion.candidate_json or "")
+
+            response = self.client.post(
+                "/api/integrations/suggestions/approve",
+                json={"userId": user_id, "ids": [suggestion.id]},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+
+            db.expire_all()
+            media = (
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id="tmdb-cover")
+                .one()
+            )
+            self.assertEqual(
+                media.cover_url, "https://image.tmdb.org/t/p/w500/cover.jpg"
+            )
+            self.assertEqual(media.description, "Sinopse do filme.")
+        finally:
+            db.close()
+
+    def test_linked_media_without_cover_is_enriched_on_sync(self) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from database import SessionLocal
+        from models.enums import MediaTypeEnum
+        from models.library_sync import LibrarySyncLink, LibrarySyncSuggestion
+        from models.media import Media
+        from schemas.import_schemas import (
+            ImportCandidate,
+            ImportMatchResponse,
+            ImportMatchResult,
+        )
+        from services.library_sync import engine as engine_module
+        from services.library_sync.providers.base import SourceItem
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            connection = self._connection(db, user_id)
+            media = Media(
+                user_id=user_id,
+                external_id="tmdb-backfill",
+                title="Backfill Movie",
+                type=MediaTypeEnum.MOVIES,
+            )
+            db.add(media)
+            db.flush()
+            db.add(
+                LibrarySyncLink(
+                    user_id=user_id,
+                    provider="fake",
+                    source_id="backfill-1",
+                    media_id=media.id,
+                    media_type=MediaTypeEnum.MOVIES,
+                    title="Backfill Movie",
+                )
+            )
+            db.commit()
+
+            item = SourceItem(
+                source_id="backfill-1",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Backfill Movie",
+                status="watched",
+                external_id="tmdb-backfill",
+            )
+            provider = self._provider([item])
+
+            async def fake_match(_db, request, _tmdb_key, _igdb):
+                candidate = ImportCandidate(
+                    provider="tmdb",
+                    external_id="tmdb-backfill",
+                    media_type=MediaTypeEnum.MOVIES,
+                    title="Backfill Movie",
+                    year=2024,
+                    cover_url="https://image.tmdb.org/t/p/w500/backfill.jpg",
+                    overview="Sinopse recuperada.",
+                    score=1.0,
+                )
+                return ImportMatchResponse(
+                    results=[
+                        ImportMatchResult(
+                            key=request.items[0].key,
+                            status="matched",
+                            match=candidate,
+                            candidates=[candidate],
+                        )
+                    ]
+                )
+
+            with (
+                patch.object(engine_module, "get_provider", return_value=provider),
+                patch.object(engine_module.matcher, "match", new=fake_match),
+            ):
+                summary = asyncio.run(engine_module.engine.sync(db, connection))
+
+            db.expire_all()
+            media = db.get(Media, media.id)
+            self.assertEqual(
+                media.cover_url, "https://image.tmdb.org/t/p/w500/backfill.jpg"
+            )
+            self.assertEqual(media.description, "Sinopse recuperada.")
+            self.assertGreaterEqual(summary["notesUpdated"], 1)
+            self.assertEqual(
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id="tmdb-backfill")
+                .count(),
+                1,
+            )
+            self.assertEqual(
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id, source_id="backfill-1")
+                .count(),
+                0,
+            )
+        finally:
+            db.close()
+
+    def test_first_sync_stages_even_legacy_baseline_missing(self) -> None:
+        import asyncio
+        import json
+        from unittest.mock import patch
+
+        from database import SessionLocal
+        from models.enums import MediaTypeEnum
+        from models.library_sync import LibrarySyncSuggestion
+        from models.media import Media
+        from services.library_sync import engine as engine_module
+        from services.library_sync.providers.base import SourceItem
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            connection = self._connection(db, user_id)
+            source_id = f"legacy-{uuid.uuid4().hex}"
+            connection.cursor_json = json.dumps({"baseline_missing": [source_id]})
+            db.commit()
+            item = SourceItem(
+                source_id=source_id,
                 media_type=MediaTypeEnum.MOVIES,
                 title="Old Missing",
                 status="watched",
                 external_id=f"tmdb-{uuid.uuid4().hex}",
+                cover_url="https://image.tmdb.org/t/p/w500/legacy.jpg",
             )
             provider = self._provider([item])
             calls = {"value": 0}
@@ -3503,15 +3901,22 @@ class LibrarySyncTests(unittest.TestCase):
                 second = asyncio.run(engine_module.engine.sync(db, connection))
 
             self.assertEqual(first["missing"], 1)
-            self.assertEqual(first["reviewStaged"], 0)
+            self.assertEqual(first["reviewStaged"], 1)
             self.assertEqual(second["missing"], 1)
             self.assertEqual(second["reviewStaged"], 0)
             self.assertEqual(calls["value"], 0)
             self.assertEqual(
-                db.query(LibrarySyncSuggestion)
-                .filter_by(user_id=user_id, source_id="baseline-missing")
-                .count(),
+                db.query(Media).filter_by(user_id=user_id).count(),
                 0,
+            )
+            self.assertEqual(
+                db.query(LibrarySyncSuggestion)
+                .filter_by(user_id=user_id, source_id=source_id)
+                .count(),
+                1,
+            )
+            self.assertNotIn(
+                "baseline_missing", json.loads(connection.cursor_json)
             )
         finally:
             db.close()

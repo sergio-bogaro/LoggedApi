@@ -3,7 +3,7 @@
 import json
 from datetime import date, datetime, time, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from models.enums import MediaStatusEnum, MediaTypeEnum
@@ -565,6 +565,19 @@ def suggestion_counts(
     if provider:
         base.append(LibrarySyncSuggestion.provider == provider)
 
+    ready = db.execute(
+        select(func.count())
+        .select_from(LibrarySyncSuggestion)
+        .where(
+            *base,
+            LibrarySyncSuggestion.review_state == "pending",
+            LibrarySyncSuggestion.candidate_json.is_not(None),
+            or_(
+                LibrarySyncSuggestion.error.is_(None),
+                LibrarySyncSuggestion.error == "",
+            ),
+        )
+    ).scalar() or 0
     attention = db.execute(
         select(func.count())
         .select_from(LibrarySyncSuggestion)
@@ -572,6 +585,8 @@ def suggestion_counts(
             *base,
             LibrarySyncSuggestion.review_state == "pending",
             LibrarySyncSuggestion.candidate_json.is_not(None),
+            LibrarySyncSuggestion.error.is_not(None),
+            LibrarySyncSuggestion.error != "",
         )
     ).scalar() or 0
     no_match = db.execute(
@@ -601,6 +616,7 @@ def suggestion_counts(
             or 0
         )
 
+    counts["ready"] = ready
     counts["attention"] = attention
     counts["no_match"] = no_match
     counts["last_sync"] = last_sync

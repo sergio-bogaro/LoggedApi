@@ -1,4 +1,3 @@
-import json
 """Commit genérico de uma importação — serve qualquer tipo de mídia.
 
 Cria/atualiza `Media`, os `MediaLog` das sessões e o item de backlog, tudo em
@@ -13,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from models.enums import MediaStatusEnum
 from models.media import Media
-from models.library_sync import LibraryConnection, LibrarySyncLink
+from models.library_sync import LibrarySyncLink
 from models.media_list_item import MediaListItem
 from models.media_log import MediaLog
 from models.suwayomi import SuwayomiMangaLink
@@ -291,24 +290,6 @@ class ImportCommitter:
             link.last_status = None
         if outcome.backlog:
             link.backlog_owned = True
-
-        connection = db.execute(
-            select(LibraryConnection).where(
-                LibraryConnection.user_id == user_id,
-                LibraryConnection.provider == provider,
-            )
-        ).scalar_one_or_none()
-        if connection is not None:
-            try:
-                cursor = json.loads(connection.cursor_json or "{}")
-            except (TypeError, ValueError):
-                cursor = {}
-            missing = cursor.get("baseline_missing") or []
-            if source_id in missing:
-                cursor["baseline_missing"] = [
-                    value for value in missing if value != source_id
-                ]
-                connection.cursor_json = json.dumps(cursor, ensure_ascii=False)
 
     @staticmethod
     def _in_backlog(db: Session, user_id: int, media_id: int) -> bool:

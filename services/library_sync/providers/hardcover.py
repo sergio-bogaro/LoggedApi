@@ -57,6 +57,7 @@ class HardcoverProvider(LibraryProvider):
     label = "Hardcover"
     media_types = [MediaTypeEnum.BOOK]
     auth_kind = "token"
+    creates_logs = True
 
     def statuses(self) -> list[SourceStatus]:
         return [
@@ -169,4 +170,7 @@ class HardcoverProvider(LibraryProvider):
             release_date=release,
             external_refs={"isbn13": isbn} if isbn else {},
             source_url=f"https://hardcover.app/books/{book.get('id') or ''}".rstrip("/"),
+            watched_at=to_date(
+                row.get("last_read_date") or row.get("first_read_date")
+            ),
         )
