@@ -12,9 +12,9 @@ from database import SessionLocal
 from services.library_sync.orchestrator import (
     due_user_ids,
     next_due_at,
-    sync_all_for_user,
     utcnow,
 )
+from services.sync_runs import sync_runs
 
 # Reavalia o relógio/banco no máximo uma vez por hora, mesmo sem mudanças.
 _MAX_SLEEP_SECONDS = 3600
@@ -95,7 +95,8 @@ class LibrarySyncScheduler:
 
         for user_id in user_ids:
             try:
-                await asyncio.to_thread(sync_all_for_user, user_id)
+                run, _started = sync_runs.start(user_id, "all")
+                await asyncio.to_thread(sync_runs.wait, run["id"])
             except Exception as exc:  # noqa: BLE001 — um usuário não derruba os outros
                 print(f"Library sync scheduler (user {user_id}): {exc}")
 

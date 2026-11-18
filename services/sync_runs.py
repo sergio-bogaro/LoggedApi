@@ -51,6 +51,9 @@ class SyncRun:
     finished_at: datetime | None = None
     summary: dict | None = None
     error: str | None = None
+    done_event: threading.Event = field(
+        default_factory=threading.Event, repr=False, compare=False
+    )
 
     def percent(self) -> float | None:
         if self.status in ("success", "partial") and self.phase == "done":
@@ -142,6 +145,16 @@ class SyncRunManager:
                 return None
             return run.to_dict()
 
+    def wait(self, run_id: str, timeout: float | None = None) -> dict[str, Any] | None:
+        with self._lock:
+            run = self._runs.get(run_id)
+            event = run.done_event if run is not None else None
+        if event is not None:
+            event.wait(timeout)
+        with self._lock:
+            run = self._runs.get(run_id)
+            return run.to_dict() if run is not None else None
+
     def _update(self, run_id: str, event: dict[str, Any]) -> None:
         with self._lock:
             run = self._runs.get(run_id)
@@ -179,6 +192,7 @@ class SyncRunManager:
             run.summary = summary
             run.error = error
             self._active_by_user.pop(run.user_id, None)
+            run.done_event.set()
             self._prune(run.user_id)
 
     def _prune(self, user_id: int) -> None:
