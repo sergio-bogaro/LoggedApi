@@ -246,6 +246,8 @@ class ImportJobService:
 
         if "selected" in data.model_fields_set:
             item.selected_json = candidate_to_json(data.selected)
+            if data.selected is not None:
+                item.match_error = None
         if data.ignored is not None:
             item.ignored = data.ignored
             _persist_suwayomi_ignore(db, user_id, item, data.ignored)
@@ -267,6 +269,9 @@ class ImportJobService:
         if job.status != "ready":
             raise ValueError("A importação não está pronta para ser confirmada.")
 
+        # Fase 3A: processa todos os itens não ignorados do job. A Fase 3B
+        # (roadmap no README) adicionará um filtro opcional por item_ids e
+        # manterá o job em revisão enquanto sobrar item pendente.
         items = (
             db.execute(
                 select(ImportJobItem)

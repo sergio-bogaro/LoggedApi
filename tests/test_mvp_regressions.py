@@ -3921,6 +3921,359 @@ class LibrarySyncTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_review_api_merges_manual_and_sync(self) -> None:
+        import json
+        from datetime import datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.import_job import ImportJob, ImportJobItem
+        from models.library_sync import LibrarySyncSuggestion
+        from schemas.import_schemas import ImportCandidate
+        from services.import_jobs.serializers import candidate_to_json
+
+        user_id = self._user()
+        movie = ImportCandidate(
+            provider="tmdb",
+            external_id=f"tmdb-review-{uuid.uuid4().hex}",
+            media_type=MediaTypeEnum.MOVIES,
+            title="Review Movie",
+            year=2024,
+            score=1.0,
+        )
+        anime = ImportCandidate(
+            provider="anilist",
+            external_id=f"anilist-review-{uuid.uuid4().hex}",
+            media_type=MediaTypeEnum.ANIME,
+            title="Review Anime",
+            score=1.0,
+        )
+        db = SessionLocal()
+        try:
+            job = ImportJob(
+                user_id=user_id,
+                provider="letterboxd",
+                input_type="file",
+                status="ready",
+                progress_done=2,
+                progress_total=2,
+                counts_json="{}",
+            )
+            db.add(job)
+            db.flush()
+            manual_ready = ImportJobItem(
+                job_id=job.id,
+                key=f"lb-ready-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Review Movie",
+                source="letterboxd",
+                match_status="matched",
+                match_json=candidate_to_json(movie),
+                candidates_json=json.dumps([movie.model_dump(mode="json")]),
+            )
+            manual_validation = ImportJobItem(
+                job_id=job.id,
+                key=f"lb-validation-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Review Movie 2",
+                source="letterboxd",
+                match_status="ambiguous",
+                match_json=candidate_to_json(movie),
+                candidates_json=json.dumps([movie.model_dump(mode="json")]),
+                match_error="Match não exato.",
+            )
+            sync_ready = LibrarySyncSuggestion(
+                user_id=user_id,
+                provider="anilist",
+                source_id=f"anilist-ready-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.ANIME,
+                title="Review Anime",
+                source_status="CURRENT",
+                action="in_progress",
+                target_status=MediaStatusEnum.IN_PROGRESS,
+                review_state="pending",
+                candidate_json=candidate_to_json(anime),
+                candidates_json=json.dumps([anime.model_dump(mode="json")]),
+                sync_run_at=datetime(2026, 1, 1),
+            )
+            sync_validation = LibrarySyncSuggestion(
+                user_id=user_id,
+                provider="anilist",
+                source_id=f"anilist-validation-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.ANIME,
+                title="Review Anime 2",
+                source_status="CURRENT",
+                action="in_progress",
+                target_status=MediaStatusEnum.IN_PROGRESS,
+                review_state="pending",
+                candidate_json=candidate_to_json(anime),
+                candidates_json=json.dumps([anime.model_dump(mode="json")]),
+                error="Match não exato; revise antes de adicionar.",
+                sync_run_at=datetime(2026, 1, 1),
+            )
+            db.add_all(
+                [manual_ready, manual_validation, sync_ready, sync_validation]
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        response = self.client.get(
+            f"/api/review/items?user_id={user_id}&state=pending"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["total"], 4)
+        counts = body["counts"]
+        self.assertEqual(counts["pending"], 4)
+        self.assertEqual(counts["ready"], 2)
+        self.assertEqual(counts["needsValidation"], 2)
+        self.assertEqual(counts["manualJobs"], 1)
+        self.assertEqual(counts["syncItems"], 2)
+        self.assertEqual(counts["pendingTasks"], 3)
+        self.assertEqual(
+            {item["source"] for item in body["items"]}, {"manual", "sync"}
+        )
+
+        manual_only = self.client.get(
+            f"/api/review/items?user_id={user_id}&state=pending&source=manual"
+        )
+        self.assertEqual(manual_only.status_code, 200, manual_only.text)
+        self.assertEqual(manual_only.json()["total"], 2)
+
+        ready_only = self.client.get(
+            f"/api/review/items?user_id={user_id}&state=pending&match=ready"
+        )
+        self.assertEqual(ready_only.status_code, 200, ready_only.text)
+        self.assertEqual(ready_only.json()["total"], 2)
+
+        count_response = self.client.get(f"/api/review/counts?user_id={user_id}")
+        self.assertEqual(count_response.status_code, 200, count_response.text)
+        self.assertEqual(count_response.json()["pendingTasks"], 3)
+
+    def test_review_api_patch_and_state(self) -> None:
+        import json
+        from datetime import datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.import_job import ImportJob, ImportJobItem
+        from models.library_sync import LibrarySyncSuggestion
+        from schemas.import_schemas import ImportCandidate
+        from services.import_jobs.serializers import candidate_to_json
+
+        user_id = self._user()
+        candidate = ImportCandidate(
+            provider="anilist",
+            external_id=f"anilist-patch-{uuid.uuid4().hex}",
+            media_type=MediaTypeEnum.ANIME,
+            title="Patch Anime",
+            score=1.0,
+        )
+        movie_candidate = ImportCandidate(
+            provider="tmdb",
+            external_id=f"tmdb-patch-{uuid.uuid4().hex}",
+            media_type=MediaTypeEnum.MOVIES,
+            title="Patch Movie",
+            score=1.0,
+        )
+        db = SessionLocal()
+        try:
+            job = ImportJob(
+                user_id=user_id,
+                provider="letterboxd",
+                input_type="file",
+                status="ready",
+                progress_done=1,
+                progress_total=1,
+            )
+            db.add(job)
+            db.flush()
+            manual = ImportJobItem(
+                job_id=job.id,
+                key=f"lb-patch-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Patch Movie",
+                source="letterboxd",
+                match_status="ambiguous",
+                match_json=candidate_to_json(candidate),
+                match_error="Match não exato.",
+            )
+            sync = LibrarySyncSuggestion(
+                user_id=user_id,
+                provider="anilist",
+                source_id=f"anilist-patch-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.ANIME,
+                title="Patch Anime",
+                source_status="CURRENT",
+                action="in_progress",
+                target_status=MediaStatusEnum.IN_PROGRESS,
+                review_state="pending",
+                candidate_json=candidate_to_json(candidate),
+                error="Match não exato.",
+                sync_run_at=datetime(2026, 1, 1),
+            )
+            db.add_all([manual, sync])
+            db.commit()
+            manual_id = manual.id
+            sync_id = sync.id
+        finally:
+            db.close()
+
+        response = self.client.patch(
+            f"/api/review/items/manual:{manual_id}",
+            json={"userId": user_id, "ignored": True},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["state"], "dismissed")
+
+        response = self.client.patch(
+            f"/api/review/items/sync:{sync_id}",
+            json={"userId": user_id, "selected": candidate.model_dump(mode="json")},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["match"], "ready")
+        self.assertIsNone(response.json()["error"])
+
+        response = self.client.post(
+            "/api/review/state",
+            json={
+                "userId": user_id,
+                "keys": [f"manual:{manual_id}"],
+                "state": "pending",
+            },
+        )
+        self.assertEqual(response.status_code, 204, response.text)
+
+        response = self.client.patch(
+            f"/api/review/items/manual:{manual_id}",
+            json={
+                "userId": user_id,
+                "selected": movie_candidate.model_dump(mode="json"),
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["match"], "ready")
+        self.assertIsNone(response.json()["error"])
+        self.assertEqual(
+            response.json()["selected"]["externalId"],
+            movie_candidate.external_id,
+        )
+
+    def test_review_api_commit_mixed_sources(self) -> None:
+        import json
+        from datetime import date, datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.import_job import ImportJob, ImportJobItem
+        from models.library_sync import LibrarySyncSuggestion
+        from models.media import Media
+        from schemas.import_schemas import ImportCandidate
+        from services.import_jobs.serializers import candidate_to_json
+
+        user_id = self._user()
+        manual_external = f"tmdb-manual-{uuid.uuid4().hex}"
+        sync_external = f"tmdb-sync-{uuid.uuid4().hex}"
+        manual_candidate = ImportCandidate(
+            provider="tmdb",
+            external_id=manual_external,
+            media_type=MediaTypeEnum.MOVIES,
+            title="Manual Commit",
+            year=2024,
+            score=1.0,
+        )
+        sync_candidate = ImportCandidate(
+            provider="tmdb",
+            external_id=sync_external,
+            media_type=MediaTypeEnum.MOVIES,
+            title="Sync Commit",
+            year=2024,
+            score=1.0,
+        )
+        db = SessionLocal()
+        try:
+            job = ImportJob(
+                user_id=user_id,
+                provider="letterboxd",
+                input_type="file",
+                status="ready",
+                progress_done=1,
+                progress_total=1,
+            )
+            db.add(job)
+            db.flush()
+            manual = ImportJobItem(
+                job_id=job.id,
+                key=f"lb-commit-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Manual Commit",
+                source="letterboxd",
+                status=MediaStatusEnum.FINISHED,
+                match_status="matched",
+                match_json=candidate_to_json(manual_candidate),
+                candidates_json=json.dumps(
+                    [manual_candidate.model_dump(mode="json")]
+                ),
+            )
+            sync = LibrarySyncSuggestion(
+                user_id=user_id,
+                provider="letterboxd",
+                source_id=f"lb-sync-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Sync Commit",
+                source_status="watched",
+                action="finished",
+                target_status=MediaStatusEnum.FINISHED,
+                watched_date=date(2026, 1, 2),
+                review_state="pending",
+                candidate_json=candidate_to_json(sync_candidate),
+                candidates_json=json.dumps(
+                    [sync_candidate.model_dump(mode="json")]
+                ),
+                sync_run_at=datetime(2026, 1, 1),
+            )
+            db.add_all([manual, sync])
+            db.commit()
+            manual_id = manual.id
+            sync_id = sync.id
+            job_id = job.id
+        finally:
+            db.close()
+
+        response = self.client.post(
+            "/api/review/commit",
+            json={
+                "userId": user_id,
+                "keys": [f"manual:{manual_id}", f"sync:{sync_id}"],
+                "addToBacklog": False,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["failed"], 0)
+        self.assertEqual(body["imported"], 2)
+
+        db = SessionLocal()
+        try:
+            self.assertEqual(
+                db.query(Media).filter_by(user_id=user_id, external_id=manual_external).count(),
+                1,
+            )
+            self.assertEqual(
+                db.query(Media).filter_by(user_id=user_id, external_id=sync_external).count(),
+                1,
+            )
+            job = db.get(ImportJob, job_id)
+            self.assertEqual(job.status, "done")
+            manual = db.get(ImportJobItem, manual_id)
+            self.assertEqual(manual.commit_outcome, "imported")
+            sync = db.get(LibrarySyncSuggestion, sync_id)
+            self.assertEqual(sync.review_state, "approved")
+            self.assertIsNotNone(sync.media_id)
+        finally:
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

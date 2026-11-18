@@ -24,6 +24,7 @@ from routers.igdb import router as igdb_router
 from routers.import_router import router as import_router
 from routers.suwayomi import router as suwayomi_router
 from routers.library_sync import router as library_sync_router
+from routers.review import router as review_router
 from routers.tmdb import router as tmdb_router
 from services.import_jobs.worker import worker as import_job_worker
 from services.library_sync.scheduler import scheduler as library_sync_scheduler
@@ -93,6 +94,7 @@ app.include_router(import_router)
 app.include_router(tmdb_router)
 app.include_router(suwayomi_router)
 app.include_router(library_sync_router)
+app.include_router(review_router)
 
 
 @app.get("/", tags=["Health"])

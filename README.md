@@ -138,27 +138,75 @@ CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
 
 ## Importação e sincronização de bibliotecas
 
-A página **Importar** tem duas abas.
+A página **Importar** tem duas abas: **Importar** e **Revisão**.
 
-### Importar (manual)
+### Importar
 
 Aceita arquivo, username ou URL, dependendo do provedor. A leitura e o matching
 rodam em background e o job fica salvo; se sair da página, o toast e o badge da
-sidebar levam de volta à revisão. Na revisão é possível ajustar o candidato,
-ignorar títulos, escolher adicionar ao backlog e confirmar a importação. O
-histórico de jobs manuais é independente do histórico automático.
+sidebar levam de volta à revisão. O histórico de jobs manuais fica nesta aba.
 
 Provedores: Letterboxd, AniList, MyAnimeList, Goodreads, Trakt, IMDb, Grouvee e
 Infinite Backlog (arquivo); AniList (username); Suwayomi (URL); Kitsu, Simkl,
 Hardcover e Open Library (conexão já configurada em Integrações).
 
-### Automáticos
+### Revisão
 
-Fila de revisão criada pelos syncs. Filtros: Todos, Validados, Último sync,
-Atenção, Sem match e Ignorados. Dá para aprovar em lote, trocar o candidato,
-buscar outro match, ignorar e restaurar. O histórico registra a origem: títulos
-criados pelo sync aparecem como automáticos; os aprovados por você, como
-aprovados. O filtro "Último sync" usa a execução mais recente.
+Fila única para jobs manuais prontos e sugestões do sync. Filtros: Pendentes,
+Match 100%, Precisa validar, Sem match, Aprovados, Ignorados e Todos. Dá para
+aprovar em lote, trocar o candidato, buscar outro match, ignorar e restaurar.
+Itens manuais são confirmados em conjunto por job; itens do sync são confirmados
+individualmente. A API unificada fica em `/api/review`.
+
+Os matches são classificados em **Match 100%**, **Precisa validar**, **Sem
+match** e **Já na biblioteca**. O commit continua usando o mesmo gravador da
+importação manual: mídia, logs, backlog e vínculo de sync são criados juntos.
+
+#### API de revisão
+
+A revisão unificada fica em `/api/review`:
+
+- `GET /api/review/items` — lista paginada com filtros de estado, match, origem,
+  provedor, tipo de mídia e busca;
+- `GET /api/review/counts` — contadores de tarefas e itens usados pela sidebar,
+  pela aba Revisão e pelos filtros;
+- `PATCH /api/review/items/{key}` — escolhe candidato ou ignora/restaura um item;
+- `POST /api/review/state` — ignorar/restaurar em lote;
+- `POST /api/review/commit` — confirma itens manuais e do sync no mesmo pedido.
+
+A camada de serviço lê as tabelas existentes (`import_job_items` e
+`library_sync_suggestions`) e as expõe no mesmo contrato `ReviewItem`. Os
+endpoints antigos de importação e de sugestões continuam disponíveis.
+
+#### Fase 3B — commit item a item para importações manuais (não implementado)
+
+Na Fase 3A, selecionar qualquer item de um job manual confirma **todos os itens
+não ignorados daquele job**. Itens do sync são confirmados individualmente. A
+interface mostra um aviso explícito sobre esse comportamento.
+
+A Fase 3B, quando necessária, permitirá confirmar apenas os itens selecionados
+de um job manual:
+
+- o job continua em revisão enquanto houver itens pendentes;
+- o job vira `done` somente quando todos os itens forem confirmados ou
+  ignorados;
+- `ImportJobCommitRequest` ganha um `item_ids` opcional;
+- `ImportJobService.commit` processa apenas os itens informados e calcula o
+  status restante do job;
+- `ReviewService.commit` repassa os itens manuais selecionados;
+- `summary_json` e `counts_json` são atualizados após cada commit parcial;
+- a UI remove o aviso de confirmação conjunta e permite seleção item a item;
+- testes cobrem commit parcial, conclusão do job, idempotência e
+  compatibilidade com o wizard antigo.
+
+A primeira versão da 3B não deve exigir novas colunas no banco: `commit_outcome`
+e `ignored` já permitem derivar o que falta revisar.
+
+#### Fase 3C — tabela física de revisão (opcional)
+
+Só será avaliada se a API de adaptação tiver problema de performance. Envolveria
+uma tabela `review_items`, backfill das duas fontes e escrita dupla durante a
+transição. As tabelas originais continuariam como auditoria.
 
 ### Sincronização automática
 
@@ -204,7 +252,7 @@ próprio Hardcover.
 ### Como o sync decide o que fazer
 
 O sync nunca cria mídia sozinho. Todo título remoto que ainda não existe no
-Logged vira uma sugestão pendente em **Importar → Automáticos**, inclusive os
+Logged vira uma sugestão pendente em **Importar → Revisão**, inclusive os
 matches exatos. A revisão usa o mesmo commit da importação manual: ao aprovar,
 a mídia, os logs, o backlog e o vínculo de sync são criados juntos.
 
