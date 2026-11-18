@@ -119,6 +119,9 @@ O projeto lê `.env` (via `pydantic-settings`). Variáveis úteis:
 - `DATABASE_URL` (ex: `sqlite:///./logged.db`)
 - `UPLOAD_DIR` (ex: `./uploads`)
 - `IMPORT_DIR` (opcional, ex: `./imports`) — arquivos temporários das importações em background, fora do `/uploads` público
+- `IMPORT_JOB_WORKER_ENABLED` (padrão `true`) — worker que processa os jobs de importação em background
+- `LIBRARY_SYNC_SCHEDULER_ENABLED` (padrão `true`) — agendador do sync global
+- `LIBRARY_SYNC_REQUEST_TIMEOUT` (padrão `20`) — timeout, em segundos, das chamadas aos provedores
 - `CORS_ORIGINS` (JSON string)
 
 Exemplo de `.env` mínimo:
@@ -133,23 +136,52 @@ CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
 - Você já confirmou que a instalação funcionou com `Python 3.12.12` — ótimo; agora basta ativar o venv e rodar `uvicorn`.
 - Se quiser, posso (a) iniciar o servidor aqui na sessão, (b) criar um script `make` ou `scripts/run.sh` para facilitar, ou (c) commitar o `README.md`. Diga qual prefere.
 
-## Sincronização de bibliotecas
+## Importação e sincronização de bibliotecas
 
-A página **Configurações → Integrações** permite conectar serviços externos e
-manter status/backlog sincronizados. A primeira sincronização é um baseline:
-ela vincula o que já existe e lista o que falta; o histórico em massa continua
-na página **Importar**, com revisão.
+A página **Importar** tem duas abas.
 
-Provedores:
+### Importar (manual)
 
-- **AniList** (username)
-- **MyAnimeList** (username + Client ID)
-- **Kitsu** (username)
-- **Trakt** (OAuth device)
-- **Simkl** (OAuth device)
-- **Letterboxd** (RSS do diário; histórico completo via CSV)
-- **Hardcover** (Personal Access Token)
-- **Open Library** (username)
+Aceita arquivo, username ou URL, dependendo do provedor. A leitura e o matching
+rodam em background e o job fica salvo; se sair da página, o toast e o badge da
+sidebar levam de volta à revisão. Na revisão é possível ajustar o candidato,
+ignorar títulos, escolher adicionar ao backlog e confirmar a importação. O
+histórico de jobs manuais é independente do histórico automático.
+
+Provedores: Letterboxd, AniList, MyAnimeList, Goodreads, Trakt, IMDb, Grouvee e
+Infinite Backlog (arquivo); AniList (username); Suwayomi (URL); Kitsu, Simkl,
+Hardcover e Open Library (conexão já configurada em Integrações).
+
+### Automáticos
+
+Fila de revisão criada pelos syncs. Filtros: Todos, Validados, Último sync,
+Atenção, Sem match e Ignorados. Dá para aprovar em lote, trocar o candidato,
+buscar outro match, ignorar e restaurar. O histórico registra a origem: títulos
+criados pelo sync aparecem como automáticos; os aprovados por você, como
+aprovados. O filtro "Último sync" usa a execução mais recente.
+
+### Sincronização automática
+
+Em **Configurações → Integrações**:
+
+- ative o sync global;
+- defina o horário inicial e a frequência (1–24x por dia); os horários são
+  fixos a partir do horário inicial;
+- escolha quais provedores participam do sync geral;
+- use **Sincronizar tudo** para executar os provedores incluídos em sequência.
+
+**Sincronizar agora** em um provedor funciona mesmo sem ele participar do sync
+geral. O Suwayomi participa quando a conta está configurada e habilitada.
+
+Cada execução roda em background e abre um diálogo com progresso por provedor e
+por item. **Continuar em segundo plano** fecha o diálogo sem cancelar; clicar de
+novo em um botão de sync reabre a execução ativa. Syncs agendados aparecem no
+mesmo diálogo. O estado é mantido em memória: reiniciar a API perde o progresso
+e a execução em andamento.
+
+Provedores: AniList, MyAnimeList, Kitsu, Trakt, Simkl, Letterboxd, Hardcover,
+Open Library e Suwayomi. Trakt e Simkl usam OAuth device; Hardcover usa token
+pessoal; MyAnimeList usa Client ID.
 
 Variáveis de ambiente para os apps OAuth/Client ID:
 
@@ -165,5 +197,18 @@ Trakt e Simkl usam o fluxo de device code: o app mostra um código e o usuário
 aprova no site. O token do Hardcover é criado nas configurações da conta do
 próprio Hardcover.
 
-A sincronização roda em background, uma conexão por vez. O intervalo é
-configurável de 1 a 24 vezes por dia.
+### Como o sync decide o que fazer
+
+A primeira execução é um baseline: vincula o que já existe no Logged e lista o
+que falta, sem criar títulos em massa. Depois do baseline:
+
+- match exato é criado direto e registrado no histórico como automático;
+- match duvidoso ou sem candidato vai para **Importar → Automáticos**;
+- títulos já vinculados recebem status, backlog e logs conforme o mapeamento
+  (logs quando o provedor fornece datas);
+- alterações manuais são preservadas até o status de origem mudar;
+- só o backlog criado pelo próprio sync é removido por ele.
+
+O Letterboxd sempre passa pela revisão. O Suwayomi usa as categorias como
+status/backlog, aproveita as datas de leitura para os logs e leva vínculos
+pendentes para a fila automática.
