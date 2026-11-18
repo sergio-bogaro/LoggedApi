@@ -212,3 +212,41 @@ class GlobalSyncResponse(_CamelModel):
     results: list[GlobalSyncResultItem] = []
     ok: int = 0
     failed: int = 0
+
+
+class SyncRunProvider(_CamelModel):
+    id: str
+    status: str = "pending"
+    done: int = 0
+    total: int = 0
+    error: str | None = None
+
+
+class SyncRunResponse(_CamelModel):
+    id: str
+    user_id: int
+    scope: str
+    status: str
+    phase: str
+    label: str = ""
+    provider: str | None = None
+    provider_index: int = 0
+    provider_total: int = 0
+    done: int = 0
+    total: int = 0
+    percent: float | None = None
+    providers: list[SyncRunProvider] = []
+    started_at: datetime
+    finished_at: datetime | None = None
+    summary: dict | None = None
+    error: str | None = None
+
+
+class SyncRunStartPayload(_CamelModel):
+    user_id: int
+    scope: str
+
+
+class SyncRunStartResponse(_CamelModel):
+    started: bool
+    run: SyncRunResponse

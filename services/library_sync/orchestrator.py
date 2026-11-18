@@ -3,6 +3,7 @@
 import json
 import re
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -18,6 +19,16 @@ from services.suwayomi.sync import service as suwayomi_sync
 
 _START_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _DEFAULT_START_TIME = "00:00"
+ProgressCallback = Callable[[dict], None]
+
+
+def _report(progress: ProgressCallback | None, **fields) -> None:
+    if progress is None:
+        return
+    try:
+        progress(fields)
+    except Exception:  # noqa: BLE001 — progresso nunca derruba o sync
+        pass
 
 
 def utcnow() -> datetime:
@@ -185,7 +196,9 @@ def _aggregate_status(results: list[dict]) -> str:
     return "ok"
 
 
-def sync_all_for_user(user_id: int) -> dict:
+def sync_all_for_user(
+    user_id: int, progress: ProgressCallback | None = None
+) -> dict:
     """Sincroniza todos os provedores incluídos, em sequência."""
     db = SessionLocal()
     try:
@@ -193,17 +206,85 @@ def sync_all_for_user(user_id: int) -> dict:
         results: list[dict] = []
         run_at = utcnow()
 
-        for provider_id in included_provider_ids(db, user_id):
+        generic_ids = included_provider_ids(db, user_id)
+        include_suwayomi = suwayomi_included(db, user_id)
+        scope_ids = list(generic_ids)
+        if include_suwayomi:
+            scope_ids.append("suwayomi")
+
+        provider_states = [
+            {"id": provider_id, "status": "pending", "done": 0, "total": 0, "error": None}
+            for provider_id in scope_ids
+        ]
+        total_providers = len(scope_ids)
+        _report(
+            progress,
+            phase="starting",
+            label="Preparando sincronização…",
+            provider_total=total_providers,
+            provider_index=0,
+            done=0,
+            total=0,
+            providers=[dict(item) for item in provider_states],
+        )
+
+        for provider_index, provider_id in enumerate(scope_ids, start=1):
+            state = provider_states[provider_index - 1]
+            state["status"] = "running"
+            _report(
+                progress,
+                phase="fetching",
+                label=provider_id,
+                provider=provider_id,
+                provider_index=provider_index,
+                provider_total=total_providers,
+                done=0,
+                total=0,
+                providers=[dict(item) for item in provider_states],
+            )
+
+            def provider_progress(
+                event: dict,
+                provider_id=provider_id,
+                provider_index=provider_index,
+            ) -> None:
+                event = dict(event)
+                event["provider"] = provider_id
+                event["provider_index"] = provider_index
+                event["provider_total"] = total_providers
+                if event.get("done") is not None:
+                    state["done"] = event["done"]
+                if event.get("total") is not None:
+                    state["total"] = event["total"]
+                if event.get("phase") in ("fetching", "syncing"):
+                    state["status"] = "running"
+                event["providers"] = [dict(item) for item in provider_states]
+                _report(progress, **event)
+
             try:
-                summary = sync_user(user_id, provider_id, run_at)
+                if provider_id == "suwayomi":
+                    summary = suwayomi_sync.sync_user(
+                        user_id, run_at, progress=provider_progress
+                    )
+                else:
+                    summary = sync_user(
+                        user_id, provider_id, run_at, provider_progress
+                    )
                 results.append(
                     {
                         "provider": provider_id,
                         "status": str(summary.get("status") or "ok"),
                         "summary": _compact_summary(summary),
                     }
+                )
+                state["status"] = (
+                    "error"
+                    if summary.get("status") in ("failed", "error")
+                    else "done"
                 )
             except Exception as exc:  # noqa: BLE001 — um provedor não derruba os outros
+                state["status"] = "error"
+                state["error"] = str(exc)
                 results.append(
                     {
                         "provider": provider_id,
@@ -211,25 +292,17 @@ def sync_all_for_user(user_id: int) -> dict:
                         "error": str(exc),
                     }
                 )
-
-        if suwayomi_included(db, user_id):
-            try:
-                summary = suwayomi_sync.sync_user(user_id, run_at)
-                results.append(
-                    {
-                        "provider": "suwayomi",
-                        "status": str(summary.get("status") or "ok"),
-                        "summary": _compact_summary(summary),
-                    }
-                )
-            except Exception as exc:  # noqa: BLE001
-                results.append(
-                    {
-                        "provider": "suwayomi",
-                        "status": "failed",
-                        "error": str(exc),
-                    }
-                )
+            _report(
+                progress,
+                phase="finishing",
+                label=provider_id,
+                provider=provider_id,
+                provider_index=provider_index,
+                provider_total=total_providers,
+                done=state["done"],
+                total=state["total"],
+                providers=[dict(item) for item in provider_states],
+            )
 
         status = _aggregate_status(results)
         now = utcnow()
@@ -253,6 +326,13 @@ def sync_all_for_user(user_id: int) -> dict:
             else None
         )
         db.commit()
+        _report(
+            progress,
+            phase="done",
+            provider_total=total_providers,
+            provider_index=total_providers,
+            providers=[dict(item) for item in provider_states],
+        )
         return {
             "status": status,
             "results": results,
@@ -263,7 +343,6 @@ def sync_all_for_user(user_id: int) -> dict:
         }
     finally:
         db.close()
-
 
 def due_user_ids(db: Session, now: datetime | None = None) -> list[int]:
     moment = now or utcnow()

@@ -8,6 +8,7 @@ import asyncio
 import json
 import threading
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Callable
 from urllib.parse import urljoin
 
 from sqlalchemy import select
@@ -37,6 +38,16 @@ from services.suwayomi.categories import (
 from services.suwayomi.client import SuwayomiClient
 
 _PENDING_RETRY_INTERVAL = timedelta(hours=24)
+ProgressCallback = Callable[[dict], None]
+
+
+def _report(progress: ProgressCallback | None, **fields) -> None:
+    if progress is None:
+        return
+    try:
+        progress(fields)
+    except Exception:  # noqa: BLE001 — progresso nunca derruba o sync
+        pass
 
 
 def utcnow() -> datetime:
@@ -389,7 +400,12 @@ class SuwayomiSyncService:
         self._running: set[int] = set()
         self._lock = threading.Lock()
 
-    def sync_user(self, user_id: int, run_at: datetime | None = None) -> dict:
+    def sync_user(
+        self,
+        user_id: int,
+        run_at: datetime | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> dict:
         """Executa o sync em uma thread própria (abre sessão e event loop)."""
         with self._lock:
             if user_id in self._running:
@@ -404,7 +420,7 @@ class SuwayomiSyncService:
                 ).scalar_one_or_none()
                 if account is None:
                     raise ValueError("O Suwayomi ainda não foi configurado.")
-                return asyncio.run(self._sync(db, account, run_at))
+                return asyncio.run(self._sync(db, account, run_at, progress))
             finally:
                 db.close()
         finally:
@@ -416,9 +432,18 @@ class SuwayomiSyncService:
         db: Session,
         account: SuwayomiAccount,
         run_at: datetime | None = None,
+        progress: ProgressCallback | None = None,
     ) -> dict:
         started = run_at or utcnow()
         summary = self._empty_summary(started)
+        _report(
+            progress,
+            phase="fetching",
+            label="Suwayomi",
+            provider="suwayomi",
+            done=0,
+            total=0,
+        )
 
         client = SuwayomiClient(
             account.base_url, username=account.username, password=account.password
@@ -426,7 +451,17 @@ class SuwayomiSyncService:
         try:
             categories = await client.get_categories()
             library = await client.get_library()
-            await self._run(db, account, categories, library, summary, started)
+            _report(
+                progress,
+                phase="syncing",
+                label="Suwayomi",
+                provider="suwayomi",
+                done=0,
+                total=len(library),
+            )
+            await self._run(
+                db, account, categories, library, summary, started, progress
+            )
             status = "partial" if summary["unmatched"] or summary["errors"] else "ok"
         except Exception as exc:  # noqa: BLE001 — reportado na tela
             db.rollback()
@@ -438,6 +473,12 @@ class SuwayomiSyncService:
         finished = utcnow()
         summary["finishedAt"] = finished.isoformat()
         summary["status"] = status
+        _report(
+            progress,
+            phase="finishing",
+            label="Suwayomi",
+            provider="suwayomi",
+        )
 
         # Reabre a transação para persistir o resultado mesmo após rollback.
         account.last_sync_at = finished
@@ -460,6 +501,7 @@ class SuwayomiSyncService:
         library: list[dict],
         summary: dict,
         run_at: datetime | None = None,
+        progress: ProgressCallback | None = None,
     ) -> None:
         run_at = run_at or utcnow()
         user_id = account.user_id
@@ -505,7 +547,15 @@ class SuwayomiSyncService:
 
         seen: set[int] = set()
 
-        for manga in library:
+        for index, manga in enumerate(library, start=1):
+            _report(
+                progress,
+                phase="syncing",
+                label="Suwayomi",
+                provider="suwayomi",
+                done=index - 1,
+                total=len(library),
+            )
             try:
                 suwayomi_id = int(manga["id"])
             except (KeyError, TypeError, ValueError):
@@ -739,6 +789,14 @@ class SuwayomiSyncService:
             link.last_seen_at = now
             link.title = title
             link.match_error = None
+            _report(
+                progress,
+                phase="syncing",
+                label="Suwayomi",
+                provider="suwayomi",
+                done=index,
+                total=len(library),
+            )
 
         if any(mapping.action != ACTION_IGNORE for mapping in mappings.values()):
             for link in links.values():
@@ -748,6 +806,14 @@ class SuwayomiSyncService:
 
         summary["library"] = len(library)
         summary["processed"] = len(seen)
+        _report(
+            progress,
+            phase="syncing",
+            label="Suwayomi",
+            provider="suwayomi",
+            done=len(library),
+            total=len(library),
+        )
 
     async def _resolve_pending_link(
         self,

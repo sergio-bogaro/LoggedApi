@@ -3209,6 +3209,83 @@ class LibrarySyncTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_sync_run_starts_in_background_and_reports_progress(self) -> None:
+        import threading
+        import time
+        from unittest.mock import patch
+
+        user_id = self._user()
+        gate = threading.Event()
+
+        def fake_sync_all(_user_id, progress=None):
+            progress(
+                {
+                    "phase": "syncing",
+                    "label": "AniList",
+                    "provider": "anilist",
+                    "provider_index": 1,
+                    "provider_total": 1,
+                    "done": 1,
+                    "total": 2,
+                }
+            )
+            gate.wait(timeout=3)
+            return {"status": "ok", "results": [], "ok": 1, "failed": 0}
+
+        with patch("services.sync_runs.sync_all_for_user", new=fake_sync_all):
+            first = self.client.post(
+                "/api/integrations/sync-runs",
+                json={"userId": user_id, "scope": "all"},
+            )
+            self.assertEqual(first.status_code, 200, first.text)
+            first_body = first.json()
+            self.assertTrue(first_body["started"])
+            run_id = first_body["run"]["id"]
+
+            second = self.client.post(
+                "/api/integrations/sync-runs",
+                json={"userId": user_id, "scope": "all"},
+            )
+            self.assertEqual(second.status_code, 200, second.text)
+            self.assertFalse(second.json()["started"])
+            self.assertEqual(second.json()["run"]["id"], run_id)
+
+            active = self.client.get(
+                f"/api/integrations/sync-runs/active?user_id={user_id}"
+            )
+            self.assertEqual(active.status_code, 200, active.text)
+            self.assertEqual(active.json()["id"], run_id)
+
+            status = self.client.get(
+                f"/api/integrations/sync-runs/{run_id}?user_id={user_id}"
+            )
+            self.assertEqual(status.status_code, 200, status.text)
+            self.assertEqual(status.json()["provider"], "anilist")
+            self.assertEqual(status.json()["done"], 1)
+            self.assertEqual(status.json()["total"], 2)
+
+            gate.set()
+            finished = None
+            for _ in range(100):
+                response = self.client.get(
+                    f"/api/integrations/sync-runs/{run_id}?user_id={user_id}"
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                if response.json()["status"] != "running":
+                    finished = response.json()
+                    break
+                time.sleep(0.02)
+
+            self.assertIsNotNone(finished)
+            self.assertEqual(finished["status"], "success")
+            self.assertEqual(finished["percent"], 100)
+            self.assertEqual(finished["summary"]["status"], "ok")
+
+            active_after = self.client.get(
+                f"/api/integrations/sync-runs/active?user_id={user_id}"
+            )
+            self.assertIsNone(active_after.json())
+
     def test_sync_all_endpoint_returns_aggregate(self) -> None:
         from unittest.mock import patch
 
@@ -3293,11 +3370,11 @@ class LibrarySyncTests(unittest.TestCase):
 
         calls = {"generic": [], "suwayomi": 0}
 
-        def fake_sync(user_id_arg, provider_id, _run_at=None):
+        def fake_sync(user_id_arg, provider_id, _run_at=None, _progress=None):
             calls["generic"].append(provider_id)
             return {"status": "ok", "created": 1}
 
-        def fake_suwayomi(user_id_arg, _run_at=None):
+        def fake_suwayomi(user_id_arg, _run_at=None, progress=None):
             calls["suwayomi"] += 1
             return {"status": "ok", "created": 2}
 

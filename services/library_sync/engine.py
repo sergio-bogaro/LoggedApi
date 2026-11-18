@@ -11,6 +11,7 @@ import asyncio
 import json
 import threading
 from datetime import datetime, time, timedelta, timezone
+from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, noload
@@ -47,6 +48,17 @@ _STATUS_ACTIONS = {status.value for status in MediaStatusEnum}
 _PENDING_INTERVAL = timedelta(hours=24)
 _MAX_LIST = 50
 _SYNC_LOCK = threading.Lock()
+
+ProgressCallback = Callable[[dict], None]
+
+
+def _report(progress: ProgressCallback | None, **fields) -> None:
+    if progress is None:
+        return
+    try:
+        progress(fields)
+    except Exception:  # noqa: BLE001 — progresso nunca derruba o sync
+        pass
 
 
 def utcnow() -> datetime:
@@ -199,6 +211,7 @@ class LibrarySyncEngine:
         db: Session,
         connection: LibraryConnection,
         run_at: datetime | None = None,
+        progress: ProgressCallback | None = None,
     ) -> dict:
         run_at = run_at or utcnow()
         provider = get_provider(connection.provider)
@@ -207,6 +220,14 @@ class LibrarySyncEngine:
         summary["startedAt"] = run_at.isoformat()
         connection.last_sync_status = "syncing"
         db.commit()
+        _report(
+            progress,
+            phase="fetching",
+            label=provider.label,
+            provider=connection.provider,
+            done=0,
+            total=0,
+        )
 
         mappings = self._ensure_mappings(db, connection, provider)
         links = {
@@ -227,6 +248,14 @@ class LibrarySyncEngine:
         cursor = provider.cursor(connection)
         baseline_missing = set(cursor.get("baseline_missing") or [])
         snapshot = await provider.fetch(connection, cursor)
+        _report(
+            progress,
+            phase="syncing",
+            label=provider.label,
+            provider=connection.provider,
+            done=0,
+            total=len(snapshot.items),
+        )
 
         if snapshot.skipped:
             summary["skipped"] = True
@@ -246,7 +275,7 @@ class LibrarySyncEngine:
         baseline = connection.baseline_completed_at is None
         seen: set[str] = set()
 
-        for item in snapshot.items:
+        for index, item in enumerate(snapshot.items, start=1):
             seen.add(item.source_id)
             summary["processed"] += 1
             try:
@@ -269,6 +298,14 @@ class LibrarySyncEngine:
                 )
             except Exception as exc:  # noqa: BLE001 — um item não derruba o sync
                 summary["errors"].append(f"{item.title}: {exc}")
+            _report(
+                progress,
+                phase="syncing",
+                label=provider.label,
+                provider=connection.provider,
+                done=index,
+                total=len(snapshot.items),
+            )
 
         if (
             not baseline
@@ -301,6 +338,14 @@ class LibrarySyncEngine:
         connection.next_sync_at = utcnow() + _interval(connection.updates_per_day)
         connection.needs_reauth = False
         db.commit()
+        _report(
+            progress,
+            phase="finishing",
+            label=provider.label,
+            provider=connection.provider,
+            done=len(snapshot.items),
+            total=len(snapshot.items),
+        )
         return summary
 
     async def _process_item(
@@ -867,7 +912,10 @@ engine = LibrarySyncEngine()
 
 
 def sync_user(
-    user_id: int, provider: str, run_at: datetime | None = None
+    user_id: int,
+    provider: str,
+    run_at: datetime | None = None,
+    progress: ProgressCallback | None = None,
 ) -> dict:
     if not _SYNC_LOCK.acquire(blocking=False):
         raise ValueError("Já existe uma sincronização em andamento. Tente novamente.")
@@ -881,7 +929,7 @@ def sync_user(
         ).scalar_one_or_none()
         if connection is None:
             raise ValueError("Conexão não configurada.")
-        summary = asyncio.run(engine.sync(db, connection, run_at))
+        summary = asyncio.run(engine.sync(db, connection, run_at, progress))
         return summary
     except Exception as exc:  # noqa: BLE001 — reportado no último sync
         db.rollback()

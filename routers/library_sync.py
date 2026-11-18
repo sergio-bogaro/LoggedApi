@@ -37,6 +37,9 @@ from schemas.library_sync import (
     SyncSuggestionsApproveResponse,
     SyncSuggestionsResponse,
     SyncSuggestionStateUpdate,
+    SyncRunResponse,
+    SyncRunStartPayload,
+    SyncRunStartResponse,
     SyncTestPayload,
     SyncTestResponse,
 )
@@ -48,6 +51,7 @@ from services.library_sync.orchestrator import (
 )
 from services.library_sync.providers.base import LibraryProvider
 from services.library_sync.scheduler import scheduler as library_sync_scheduler
+from services.sync_runs import sync_runs
 from services.library_sync.registry import get_provider, list_providers
 from services.library_sync.suggestions import (
     approve_suggestions,
@@ -358,6 +362,32 @@ def update_sync_suggestion_candidate(
         db, data.user_id, suggestion_id, data.candidate
     )
     return _suggestion_response(suggestion)
+
+
+@router.post("/sync-runs", response_model=SyncRunStartResponse)
+def start_sync_run(data: SyncRunStartPayload):
+    """Inicia um sync em background ou retorna o que já está rodando."""
+    try:
+        run, started = sync_runs.start(data.user_id, data.scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SyncRunStartResponse(
+        started=started, run=SyncRunResponse(**run)
+    )
+
+
+@router.get("/sync-runs/active", response_model=SyncRunResponse | None)
+def active_sync_run(user_id: int):
+    run = sync_runs.active(user_id)
+    return SyncRunResponse(**run) if run is not None else None
+
+
+@router.get("/sync-runs/{run_id}", response_model=SyncRunResponse)
+def get_sync_run(run_id: str, user_id: int):
+    run = sync_runs.get(user_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Execução de sync não encontrada.")
+    return SyncRunResponse(**run)
 
 
 @router.get("/{provider_id}", response_model=SyncProviderInfo)
