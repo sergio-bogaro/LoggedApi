@@ -21,6 +21,7 @@ from services.library_sync.providers.common import (
     to_float,
     year_of,
 )
+from domain_errors import DomainError
 
 _API = "https://kitsu.io/api/edge"
 _PAGE = 500
@@ -51,13 +52,13 @@ class KitsuProvider(LibraryProvider):
         response.raise_for_status()
         data = response.json().get("data") or []
         if not data:
-            raise ValueError("Username do Kitsu não encontrado.")
+            raise DomainError("Username do Kitsu não encontrado.")
         return str(data[0]["id"])
 
     async def test(self, connection: LibraryConnection) -> str:
         username = str(self.auth(connection).get("username") or "").strip()
         if not username:
-            raise ValueError("Informe o username do Kitsu.")
+            raise DomainError("Informe o username do Kitsu.")
         await self._user_id(username)
         return username
 
@@ -66,7 +67,7 @@ class KitsuProvider(LibraryProvider):
     ) -> SourceSnapshot:
         username = str(self.auth(connection).get("username") or "").strip()
         if not username:
-            raise ValueError("Informe o username do Kitsu.")
+            raise DomainError("Informe o username do Kitsu.")
         user_id = await self._user_id(username)
 
         items: dict[str, SourceItem] = {}

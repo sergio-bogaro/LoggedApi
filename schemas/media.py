@@ -5,6 +5,7 @@ from pydantic.alias_generators import to_camel
 from models.enums import MediaStatusEnum, MediaTypeEnum
 from schemas.date_utils import parse_optional_datetime
 from schemas.media_log import MediaLogResponse
+from domain_errors import DomainError
 
 
 class MediaBase(BaseModel):
@@ -58,7 +59,7 @@ class MediaUpdate(BaseModel):
     @classmethod
     def _reject_null_title(cls, data: object) -> object:
         if isinstance(data, dict) and "title" in data and data["title"] is None:
-            raise ValueError("O título não pode ser nulo.")
+            raise DomainError("O título não pode ser nulo.")
         return data
 
 

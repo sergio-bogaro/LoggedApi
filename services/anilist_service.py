@@ -9,6 +9,7 @@ import threading
 import time
 
 import httpx
+from domain_errors import DomainError
 
 _ANILIST_URL = "https://graphql.anilist.co"
 
@@ -196,7 +197,7 @@ class AniListService:
                         },
                     )
             except httpx.HTTPError as exc:
-                raise ValueError(f"Falha ao contatar o AniList: {exc}") from exc
+                raise DomainError(f"Falha ao contatar o AniList: {exc}") from exc
 
             _observe_rate_limit(response.headers)
 
@@ -205,21 +206,21 @@ class AniListService:
                 if attempt < 4:
                     # O próximo _throttle_anilist espera o bloqueio.
                     continue
-                raise ValueError(
+                raise DomainError(
                     "O AniList limitou a taxa de requisições (429) repetidamente. "
                     "Tente novamente mais tarde."
                 )
 
             if response.status_code >= 400:
-                raise ValueError(f"O AniList retornou um erro ({response.status_code}).")
+                raise DomainError(f"O AniList retornou um erro ({response.status_code}).")
 
             data = response.json()
             if data.get("errors"):
                 message = data["errors"][0].get("message", "erro desconhecido")
-                raise ValueError(f"AniList: {message}")
+                raise DomainError(f"AniList: {message}")
             return data.get("data") or {}
 
-        raise ValueError("Falha ao contatar o AniList.")
+        raise DomainError("Falha ao contatar o AniList.")
 
     async def query(self, query: str, variables: dict) -> dict:
         """Executa uma query GraphQL arbitrária (usada pelo sync de biblioteca)."""
@@ -237,7 +238,7 @@ class AniListService:
         )
         collection = data.get("MediaListCollection")
         if not collection:
-            raise ValueError(
+            raise DomainError(
                 "Lista não encontrada. Verifique o username e se o perfil do AniList é público."
             )
         return collection

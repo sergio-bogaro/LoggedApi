@@ -1,6 +1,6 @@
 import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -22,8 +22,8 @@ def list_logs(
     user_id: int,
     start: datetime.date | None = None,
     end: datetime.date | None = None,
-    limit: int | None = None,
-    offset: int = 0,
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
     """Lista todos os logs do usuário, opcionalmente recortados por período."""

@@ -1,9 +1,9 @@
-import asyncio
 from datetime import datetime, timedelta
 
 import httpx
 
 from config import settings
+from services.http_client import get_async_client, get_loop_lock
 from schemas.igdb import (
     IgdbArtwork,
     IgdbGame,
@@ -15,23 +15,15 @@ from schemas.igdb import (
     IgdbVideo,
     IgdbWebsite,
 )
+from domain_errors import DomainError
 
 
 class IgdbService:
     """Service for IGDB API with Twitch OAuth2 token management."""
 
     def __init__(self) -> None:
-        # Caches por client_id — cada usuário pode ter as próprias credenciais.
+        # Cache de tokens por client_id — tokens não dependem do event loop.
         self._tokens: dict[str, tuple[str, datetime]] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
-        self._client: httpx.AsyncClient | None = None
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                timeout=settings.igdb_request_timeout, follow_redirects=True
-            )
-        return self._client
 
     async def _ensure_token(self, client_id: str, client_secret: str) -> str:
         """Get a valid Twitch OAuth token for the given credentials, refreshing if needed."""
@@ -40,14 +32,17 @@ class IgdbService:
         if cached and now < cached[1]:
             return cached[0]
 
-        lock = self._locks.setdefault(client_id, asyncio.Lock())
+        # Lock por loop: o serviço é usado pelo loop da API e por loops de sync.
+        lock = get_loop_lock(f"igdb-token:{client_id}")
         async with lock:
             # Double-check after acquiring the lock
             cached = self._tokens.get(client_id)
             if cached and datetime.now() < cached[1]:
                 return cached[0]
 
-            client = self._get_client()
+            client = get_async_client(
+                "igdb", timeout=settings.igdb_request_timeout
+            )
             try:
                 resp = await client.post(
                     settings.igdb_oauth_url,
@@ -58,9 +53,9 @@ class IgdbService:
                     },
                 )
             except httpx.HTTPError as exc:
-                raise ValueError(f"Falha ao contatar o Twitch/IGDB: {exc}") from exc
+                raise DomainError(f"Falha ao contatar o Twitch/IGDB: {exc}") from exc
             if resp.status_code in (400, 401, 403):
-                raise ValueError(
+                raise DomainError(
                     "O IGDB/Twitch rejeitou as credenciais. Verifique o Client ID e o Secret."
                 )
             resp.raise_for_status()
@@ -79,7 +74,7 @@ class IgdbService:
     ) -> list[dict]:
         """Make an authenticated POST request to IGDB."""
         token = await self._ensure_token(client_id, client_secret)
-        client = self._get_client()
+        client = get_async_client("igdb", timeout=settings.igdb_request_timeout)
 
         try:
             resp = await client.post(
@@ -93,13 +88,13 @@ class IgdbService:
                 },
             )
         except httpx.HTTPError as exc:
-            raise ValueError(f"Falha ao contatar o IGDB: {exc}") from exc
+            raise DomainError(f"Falha ao contatar o IGDB: {exc}") from exc
 
         if resp.status_code >= 400:
-            raise ValueError(f"O IGDB retornou um erro ({resp.status_code}).")
+            raise DomainError(f"O IGDB retornou um erro ({resp.status_code}).")
         data = resp.json()
         if not isinstance(data, list):
-            raise ValueError(f"IGDB returned unexpected response: {data}")
+            raise DomainError(f"IGDB returned unexpected response: {data}")
         return data
 
     @staticmethod
@@ -170,7 +165,7 @@ class IgdbService:
 
         results = await self._post("/games", body, client_id, client_secret)
         if not results:
-            raise ValueError(f"Game {game_id} not found in IGDB")
+            raise DomainError(f"Game {game_id} not found in IGDB")
 
         g = results[0]
 

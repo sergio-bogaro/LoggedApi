@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from services.credentials_service import resolve_tmdb_key, tmdb_source
 from services.tmdb_service import service
+from domain_errors import DomainError
 
 router = APIRouter(prefix="/api/tmdb", tags=["TMDB"])
 
@@ -23,7 +24,7 @@ async def search_movies(
     """Busca filmes no TMDB (proxy; a chave nunca chega ao navegador)."""
     api_key = resolve_tmdb_key(db, user_id)
     if not api_key:
-        raise ValueError("Nenhuma chave do TMDB configurada.")
+        raise DomainError("Nenhuma chave do TMDB configurada.")
     return await service.search_movies(query, api_key)
 
 
@@ -34,7 +35,7 @@ async def get_movie(
     """Detalhes de um filme no TMDB (proxy)."""
     api_key = resolve_tmdb_key(db, user_id)
     if not api_key:
-        raise ValueError("Nenhuma chave do TMDB configurada.")
+        raise DomainError("Nenhuma chave do TMDB configurada.")
     return await service.get_movie(movie_id, api_key)
 
 
@@ -45,7 +46,7 @@ async def search_series(
     """Busca séries no TMDB (proxy; a chave nunca chega ao navegador)."""
     api_key = resolve_tmdb_key(db, user_id)
     if not api_key:
-        raise ValueError("Nenhuma chave do TMDB configurada.")
+        raise DomainError("Nenhuma chave do TMDB configurada.")
     return await service.search_tv(query, api_key)
 
 
@@ -56,5 +57,5 @@ async def get_tv(
     """Detalhes de uma série no TMDB (proxy)."""
     api_key = resolve_tmdb_key(db, user_id)
     if not api_key:
-        raise ValueError("Nenhuma chave do TMDB configurada.")
+        raise DomainError("Nenhuma chave do TMDB configurada.")
     return await service.get_tv(tv_id, api_key)

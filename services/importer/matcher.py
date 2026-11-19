@@ -26,6 +26,7 @@ from services.anilist_service import service as anilist_service
 from services.igdb_service import service as igdb_service
 from services.openlibrary_service import service as openlibrary_service, work_id_from_key
 from services.tmdb_service import service as tmdb_service
+from domain_errors import DomainError
 
 _TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 _MATCH_CONCURRENCY = 6
@@ -228,7 +229,7 @@ class ImportMatcher:
             return await self._igdb_search(query, igdb_credentials)
         if media_type in (MediaTypeEnum.MOVIES, MediaTypeEnum.SERIES):
             if not tmdb_api_key:
-                raise ValueError("Nenhuma chave do TMDB configurada.")
+                raise DomainError("Nenhuma chave do TMDB configurada.")
             return await self._tmdb_search_candidates(media_type, query, None, tmdb_api_key)
         return []
 
@@ -247,11 +248,11 @@ class ImportMatcher:
             return await self._openlibrary_candidates(item)
         if item.media_type == MediaTypeEnum.GAME:
             if not igdb_credentials[0] or not igdb_credentials[1]:
-                raise ValueError("Nenhuma credencial do IGDB configurada.")
+                raise DomainError("Nenhuma credencial do IGDB configurada.")
             return await self._igdb_candidates(item, igdb_credentials)
         if item.media_type in (MediaTypeEnum.MOVIES, MediaTypeEnum.SERIES):
             if not tmdb_api_key:
-                raise ValueError("Nenhuma chave do TMDB configurada.")
+                raise DomainError("Nenhuma chave do TMDB configurada.")
             return await self._tmdb_search_candidates(
                 item.media_type, item.title, item.year, tmdb_api_key, item.external_refs
             )

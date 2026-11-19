@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -7,14 +8,8 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import IntegrityError
 
 from config import settings
-from database import (
-    Base,
-    engine,
-    ensure_columns,
-    ensure_indexes,
-    drop_obsolete_tables,
-    validate_schema,
-)
+from domain_errors import DomainError
+from logging_setup import configure_logging
 from routers.auth import router as auth_router
 from routers.media import router as media_router
 from routers.media_log import router as media_log_router
@@ -29,17 +24,15 @@ from routers.tmdb import router as tmdb_router
 from services.import_jobs.worker import worker as import_job_worker
 from services.library_sync.scheduler import scheduler as library_sync_scheduler
 
+configure_logging()
+logger = logging.getLogger("logged.api")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: cria as tabelas no banco e aplica colunas novas em tabelas existentes
-    Base.metadata.create_all(bind=engine)
-    ensure_columns()
-    validate_schema()
-    ensure_indexes()
-    drop_obsolete_tables()
-    print("Database tables created")
-    print(f"Upload directory: {settings.upload_path}")
+    # O schema é responsabilidade do Alembic (`alembic upgrade head`), executado
+    # pelo entrypoint antes da API subir. O startup não altera o banco.
+    logger.info("Upload directory: %s", settings.upload_path)
     await library_sync_scheduler.start()
     await import_job_worker.start()
     yield
@@ -55,16 +48,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Erros de validação de domínio (upload inválido, jogo/credenciais IGDB etc.)
-# chegam como ValueError; sem isso virariam 500.
-@app.exception_handler(ValueError)
-async def value_error_handler(request: Request, exc: ValueError):
-    return JSONResponse(status_code=400, content={"detail": str(exc)})
+# Erros de domínio (upload inválido, jogo/credenciais IGDB etc.) viram 400 com
+# a mensagem segura. Exceções inesperadas continuam 500 e ficam no log.
+@app.exception_handler(DomainError)
+async def domain_error_handler(request: Request, exc: DomainError):
+    logger.info(
+        "Erro de domínio em %s %s: %s", request.method, request.url.path, exc
+    )
+    return JSONResponse(
+        status_code=exc.status_code, content={"detail": exc.message}
+    )
 
 
 @app.exception_handler(IntegrityError)
 async def integrity_error_handler(request: Request, exc: IntegrityError):
     # Evita 500 quando um cliente envia um valor que viola uma constraint.
+    logger.warning(
+        "IntegrityError em %s %s: %s", request.method, request.url.path, exc
+    )
     return JSONResponse(
         status_code=409,
         content={"detail": "Não foi possível salvar os dados: valor duplicado ou inválido."},

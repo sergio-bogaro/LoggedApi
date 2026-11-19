@@ -24,6 +24,7 @@ from services.library_sync.providers.common import (
     to_float,
     year_of,
 )
+from domain_errors import DomainError
 
 _API = "https://api.simkl.com"
 _APP_NAME = "logged"
@@ -59,7 +60,7 @@ class SimklProvider(LibraryProvider):
         client_id = (settings.simkl_client_id or "").strip()
         client_secret = (settings.simkl_client_secret or "").strip()
         if not client_id:
-            raise ValueError(
+            raise DomainError(
                 "Configure SIMKL_CLIENT_ID (e SIMKL_CLIENT_SECRET, se for app de "
                 "servidor) para conectar o Simkl."
             )
@@ -121,7 +122,7 @@ class SimklProvider(LibraryProvider):
         refresh_token = str(auth.get("refresh_token") or "")
         if not refresh_token:
             connection.needs_reauth = True
-            raise ValueError("Conexão com o Simkl expirada. Reconecte a conta.")
+            raise DomainError("Conexão com o Simkl expirada. Reconecte a conta.")
         client_id, client_secret = self._client()
         data = {
             "grant_type": "refresh_token",
@@ -134,7 +135,7 @@ class SimklProvider(LibraryProvider):
             response = await http.post(f"{_API}/oauth2/token", data=data)
         if response.status_code >= 400:
             connection.needs_reauth = True
-            raise ValueError("Não foi possível renovar a conexão com o Simkl.")
+            raise DomainError("Não foi possível renovar a conexão com o Simkl.")
         tokens = response.json()
         auth.update(tokens)
         auth["expires_at"] = (
@@ -148,7 +149,7 @@ class SimklProvider(LibraryProvider):
         token = str(auth.get("access_token") or "")
         if not token:
             connection.needs_reauth = True
-            raise ValueError("Conecte sua conta do Simkl em Configurações > Integrações.")
+            raise DomainError("Conecte sua conta do Simkl em Configurações > Integrações.")
         expires_at = to_datetime(auth.get("expires_at"))
         if expires_at is not None:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -186,12 +187,12 @@ class SimklProvider(LibraryProvider):
                     continue
                 if response.status_code == 401:
                     connection.needs_reauth = True
-                    raise ValueError("Conexão com o Simkl expirada. Reconecte a conta.")
+                    raise DomainError("Conexão com o Simkl expirada. Reconecte a conta.")
                 response.raise_for_status()
                 if not response.content:
                     return {}
                 return response.json()
-        raise ValueError("O Simkl limitou as requisições. Tente novamente mais tarde.")
+        raise DomainError("O Simkl limitou as requisições. Tente novamente mais tarde.")
 
     async def test(self, connection: LibraryConnection) -> str:
         data = await self._request(connection, "/users/settings")

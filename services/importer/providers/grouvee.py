@@ -22,6 +22,7 @@ from schemas.import_schemas import (
     ImportPreviewResponse,
 )
 from services.importer.providers.base import ImportProvider
+from domain_errors import DomainError
 
 _MAX_ROWS = 50_000
 
@@ -74,14 +75,14 @@ class GrouveeProvider(ImportProvider):
 
     async def parse_file(self, filename: str, raw: bytes) -> ImportPreviewResponse:
         if not raw:
-            raise ValueError("O arquivo enviado está vazio.")
+            raise DomainError("O arquivo enviado está vazio.")
 
         text = raw.decode("utf-8-sig", errors="replace")
         rows = list(csv.reader(io.StringIO(text)))
         if not rows:
-            raise ValueError("CSV do Grouvee vazio.")
+            raise DomainError("CSV do Grouvee vazio.")
         if len(rows) > _MAX_ROWS:
-            raise ValueError("CSV do Grouvee tem linhas demais.")
+            raise DomainError("CSV do Grouvee tem linhas demais.")
 
         # A primeira linha é o cabeçalho; ignora se não começar com o id numérico.
         data_rows = rows[1:] if not (rows[0] and rows[0][0].strip().isdigit()) else rows
@@ -93,7 +94,7 @@ class GrouveeProvider(ImportProvider):
                 entries.append(entry)
 
         if not entries:
-            raise ValueError("Nenhum jogo reconhecido no CSV do Grouvee.")
+            raise DomainError("Nenhum jogo reconhecido no CSV do Grouvee.")
 
         counts = ImportPreviewCounts(
             total=len(entries),

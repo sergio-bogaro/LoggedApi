@@ -5,6 +5,7 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 
 from config import settings
+from domain_errors import DomainError
 
 _LIBRARY_QUERY = """
 query ($first: Int, $offset: Int) {
@@ -56,11 +57,11 @@ def normalize_base_url(url: str) -> str:
     """
     raw = (url or "").strip()
     if not raw:
-        raise ValueError("Informe a URL do Suwayomi.")
+        raise DomainError("Informe a URL do Suwayomi.")
 
     parsed = urlparse(raw)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValueError("A URL do Suwayomi deve começar com http:// ou https://.")
+        raise DomainError("A URL do Suwayomi deve começar com http:// ou https://.")
 
     path = parsed.path.rstrip("/")
     for suffix in ("/api/graphql", "/api"):
@@ -105,28 +106,28 @@ class SuwayomiClient:
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
             )
         except httpx.HTTPError as exc:
-            raise ValueError(
+            raise DomainError(
                 f"Não foi possível conectar ao Suwayomi em {self.base_url}: {exc}"
             ) from exc
 
         if response.status_code in (401, 403):
-            raise ValueError(
+            raise DomainError(
                 "O Suwayomi recusou a autenticação. Confira usuário e senha "
                 "(apenas autenticação Basic é suportada)."
             )
         if response.status_code >= 400:
-            raise ValueError(f"O Suwayomi retornou um erro ({response.status_code}).")
+            raise DomainError(f"O Suwayomi retornou um erro ({response.status_code}).")
 
         try:
             payload = response.json()
         except ValueError as exc:
-            raise ValueError(
+            raise DomainError(
                 "O Suwayomi respondeu algo que não é JSON. Confira a URL do servidor."
             ) from exc
 
         if payload.get("errors"):
             message = payload["errors"][0].get("message", "erro desconhecido")
-            raise ValueError(f"Suwayomi: {message}")
+            raise DomainError(f"Suwayomi: {message}")
 
         return payload.get("data") or {}
 

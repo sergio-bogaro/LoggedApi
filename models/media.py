@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pydantic import ConfigDict
-from sqlalchemy import DateTime, Enum, Float, Integer, String, Text, func, ForeignKey
+from sqlalchemy import DateTime, Enum, Float, Integer, String, Text, func, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -17,6 +17,15 @@ if TYPE_CHECKING:
 
 class Media(Base):
     __tablename__ = "media"
+    __table_args__ = (
+        Index(
+            "uq_media_user_type_external",
+            "user_id",
+            "type",
+            "external_id",
+            unique=True,
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)

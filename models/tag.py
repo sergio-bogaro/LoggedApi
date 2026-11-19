@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Integer, String, Table, Column, ForeignKey
+from sqlalchemy import Integer, String, Table, Column, ForeignKey, Index, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -23,6 +23,12 @@ class Tag(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+
+    __table_args__ = (
+        # Unicidade sem diferenciar caixa. Fica no metadata para o Alembic
+        # enxergar o índice e para bancos novos já nascerem com ele.
+        Index("uq_tags_name_lower", func.lower(name), unique=True),
+    )
 
     # Relacionamento Many-to-Many com Media
     media: Mapped[list["Media"]] = relationship(

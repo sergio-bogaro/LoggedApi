@@ -7,6 +7,7 @@ __pycache__/
 .env
 uploads/*
 !uploads/.gitkeep
+backups/
 venv/
 .venv/
 *.egg-info/

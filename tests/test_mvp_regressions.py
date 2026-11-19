@@ -20,11 +20,16 @@ os.environ["LIBRARY_SYNC_SCHEDULER_ENABLED"] = "false"
 from fastapi.testclient import TestClient  # noqa: E402
 
 from main import app  # noqa: E402
+from database import Base, engine  # noqa: E402
 from schemas.media import MediaCreate  # noqa: E402
 from services.importer.providers.letterboxd import LetterboxdProvider
 from services.importer.providers.mal import MalProvider  # noqa: E402
 from services.openlibrary_service import OpenLibraryService  # noqa: E402
 from models.enums import MediaTypeEnum  # noqa: E402
+
+# O startup da API não cria mais schema (isso é do Alembic). Nos testes, o banco
+# temporário nasce direto do metadata, incluindo os índices únicos.
+Base.metadata.create_all(bind=engine)
 
 
 class ApiRegressionTests(unittest.TestCase):
@@ -270,6 +275,55 @@ class ImportProviderTests(unittest.TestCase):
                 LetterboxdProvider().parse_file("bad.zip", b"not a zip")
             )
 
+    def test_letterboxd_zip_ignores_nested_duplicate_files(self) -> None:
+        import io
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                "watched.csv",
+                "Date,Name,Year,Letterboxd URI\n"
+                "2024-01-01,My Film,2024,https://boxd.it/abc\n",
+            )
+            archive.writestr(
+                "diary.csv",
+                "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date\n"
+                "2024-01-03,My Film,2024,https://boxd.it/abc,4.5,,,2024-01-01\n",
+            )
+            archive.writestr(
+                "reviews.csv",
+                "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Review,Tags,Watched Date\n"
+                "2024-01-02,My Film,2024,https://boxd.it/abc,4.5,,"
+                "Minha review escrita,,2024-01-01\n",
+            )
+            # Estrutura real do export: essas cópias vêm depois da raiz no ZIP.
+            archive.writestr("likes/reviews.csv", "Date,Content\n2024-01-01,https://boxd.it/xyz\n")
+            archive.writestr(
+                "deleted/reviews.csv",
+                "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Review,Tags,Watched Date\n",
+            )
+            archive.writestr(
+                "orphaned/reviews.csv",
+                "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Review,Tags,Watched Date\n",
+            )
+            archive.writestr(
+                "orphaned/diary.csv",
+                "Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date\n",
+            )
+
+        preview = asyncio.run(
+            LetterboxdProvider().parse_file("export.zip", buffer.getvalue())
+        )
+
+        self.assertEqual(preview.counts.reviewed, 1)
+        self.assertEqual(preview.counts.with_logs, 1)
+        entry = preview.entries[0]
+        self.assertEqual(entry.review, "Minha review escrita")
+        self.assertEqual(len(entry.logs), 1)
+        self.assertEqual(entry.logs[0].date.isoformat(), "2024-01-01")
+        self.assertEqual(entry.logs[0].review, "Minha review escrita")
+
     def test_openlibrary_work_uses_json_endpoint(self) -> None:
         service = OpenLibraryService()
         seen: dict[str, str] = {}
@@ -294,6 +348,40 @@ class SchemaTests(unittest.TestCase):
         )
         self.assertEqual(media.release_date.year, 2024)
         self.assertEqual(media.release_date.month, 5)
+
+
+class HttpClientTests(unittest.TestCase):
+    def test_client_and_lock_are_scoped_per_event_loop(self) -> None:
+        from services.http_client import (
+            close_loop_clients,
+            get_async_client,
+            get_loop_lock,
+        )
+
+        async def same_loop():
+            first = get_async_client("test", timeout=1)
+            second = get_async_client("test", timeout=1)
+            lock_a = get_loop_lock("test")
+            lock_b = get_loop_lock("test")
+            await close_loop_clients()
+            return first, second, lock_a, lock_b
+
+        first, second, lock_a, lock_b = asyncio.run(same_loop())
+        self.assertIs(first, second)
+        self.assertIs(lock_a, lock_b)
+        self.assertTrue(first.is_closed)
+
+        async def other_loop():
+            client = get_async_client("test", timeout=1)
+            lock = get_loop_lock("test")
+            await close_loop_clients()
+            return client, lock
+
+        other, other_lock = asyncio.run(other_loop())
+        # Loops diferentes nunca compartilham objeto: era a causa do
+        # "Event loop is closed" / "TCPTransport ... handler is closed".
+        self.assertIsNot(first, other)
+        self.assertIsNot(lock_a, other_lock)
 
 
 class SuwayomiTests(unittest.TestCase):
@@ -1288,6 +1376,37 @@ class SuwayomiTests(unittest.TestCase):
         self.assertEqual(item.rating, 8.0)
         self.assertEqual(item.review, "Great film.")
         self.assertEqual(item.year, 2024)
+
+    def test_letterboxd_rss_watch_without_review_has_no_review(self) -> None:
+        from defusedxml.ElementTree import fromstring
+
+        from services.library_sync.providers.letterboxd import LetterboxdProvider
+
+        def item_for(description: str):
+            xml = f"""<?xml version='1.0' encoding='utf-8'?>
+            <rss version="2.0" xmlns:letterboxd="https://letterboxd.com"
+                 xmlns:tmdb="https://themoviedb.org">
+              <channel><item>
+                <title>Backrooms, 2026</title>
+                <guid>letterboxd-watch-999</guid>
+                <description>{description}</description>
+                <letterboxd:filmTitle>Backrooms</letterboxd:filmTitle>
+                <letterboxd:filmYear>2026</letterboxd:filmYear>
+                <letterboxd:watchedDate>2026-11-08</letterboxd:watchedDate>
+                <tmdb:movieId>1083381</tmdb:movieId>
+              </item></channel>
+            </rss>"""
+            return LetterboxdProvider()._to_item(fromstring(xml.encode()).find(".//item"))
+
+        only_watched = item_for("Watched on Sunday November 8, 2026.")
+        assert only_watched is not None
+        self.assertIsNone(only_watched.review)
+
+        watched_with_review = item_for(
+            "Watched on Sunday November 8, 2026.&lt;p&gt;Ótimo filme.&lt;/p&gt;"
+        )
+        assert watched_with_review is not None
+        self.assertEqual(watched_with_review.review, "Ótimo filme.")
 
     def test_connection_import_preview_uses_mapping(self) -> None:
         import asyncio
@@ -2434,6 +2553,93 @@ class ImportJobTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_commit_backfills_review_on_existing_log(self) -> None:
+        from datetime import date
+
+        from sqlalchemy import select
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum
+        from models.media import Media
+        from models.media_log import MediaLog
+        from schemas.import_schemas import (
+            ImportCommitEntry,
+            ImportCommitRequest,
+            ImportLogEntry,
+        )
+        from services.importer.commit import committer
+
+        user_id = self._user()
+        external_id = f"review-{uuid.uuid4().hex}"
+        media = self.client.post(
+            "/api/media/",
+            json={
+                "userId": user_id,
+                "title": "Review Film",
+                "type": "movies",
+                "externalId": external_id,
+            },
+        )
+        self.assertEqual(media.status_code, 201, media.text)
+        media_id = media.json()["id"]
+
+        db = SessionLocal()
+        try:
+            db.add(
+                MediaLog(
+                    user_id=user_id,
+                    media_id=media_id,
+                    date=date(2024, 1, 1),
+                    status=MediaStatusEnum.FINISHED,
+                    rating=4.0,
+                    review=None,
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        db = SessionLocal()
+        try:
+            response = committer.commit(
+                db,
+                ImportCommitRequest(
+                    user_id=user_id,
+                    entries=[
+                        ImportCommitEntry(
+                            key="review-key",
+                            media_type=MediaTypeEnum.MOVIES,
+                            external_id=external_id,
+                            title="Review Film",
+                            status=MediaStatusEnum.FINISHED,
+                            review="Minha review",
+                            logs=[
+                                ImportLogEntry(
+                                    date=date(2024, 1, 1),
+                                    status=MediaStatusEnum.FINISHED,
+                                    review="Minha review",
+                                )
+                            ],
+                        )
+                    ],
+                ),
+            )
+            self.assertEqual(response.failures, [])
+            self.assertEqual(response.merged, 1)
+            self.assertEqual(response.logs_created, 0)
+
+            logs = (
+                db.execute(select(MediaLog).where(MediaLog.media_id == media_id))
+                .scalars()
+                .all()
+            )
+            self.assertEqual(len(logs), 1)
+            self.assertEqual(logs[0].review, "Minha review")
+            self.assertEqual(logs[0].rating, 4.0)  # nota manual preservada
+            self.assertEqual(db.get(Media, media_id).review, "Minha review")
+        finally:
+            db.close()
+
 
 class LibrarySyncTests(unittest.TestCase):
     @classmethod
@@ -2502,6 +2708,28 @@ class LibrarySyncTests(unittest.TestCase):
         db.commit()
         db.refresh(connection)
         return connection
+
+    def test_sync_user_uses_database_engine(self) -> None:
+        """Regressão: `engine` do módulo é o singleton, não o Engine do SQLAlchemy."""
+        from database import SessionLocal
+        from services.library_sync import engine as engine_module
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            self._connection(db, user_id)
+        finally:
+            db.close()
+
+        summary = {"provider": "fake", "processed": 1}
+
+        async def fake_sync(*_args, **_kwargs):
+            return summary
+
+        with patch.object(engine_module.engine, "sync", new=fake_sync):
+            result = engine_module.sync_user(user_id, "fake")
+
+        self.assertEqual(result, summary)
 
     @staticmethod
     def _exact_matcher(external_id: str, title: str, media_type):

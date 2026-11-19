@@ -149,27 +149,39 @@ class ImportCommitter:
                 media.release_date = fallback_date
                 outcome.changed = True
 
-        existing_keys = {(log.date, log.status) for log in media.logs}
+        existing_logs = {(log.date, log.status): log for log in media.logs}
         for log in entry.logs:
             status = log.status or entry.status or MediaStatusEnum.FINISHED
-            if (log.date, status) in existing_keys:
+            key = (log.date, status)
+            existing_log = existing_logs.get(key)
+            if existing_log is not None:
+                # Reimportação: completa só o que estiver vazio, sem sobrescrever
+                # edições manuais do usuário.
+                review = log.review or entry.review
+                rating = log.rating if log.rating is not None else entry.rating
+                if not existing_log.review and review:
+                    existing_log.review = review
+                    outcome.changed = True
+                if existing_log.rating is None and rating is not None:
+                    existing_log.rating = rating
+                    outcome.changed = True
                 continue
+
             end_date = log.end_date
             if end_date is None and status in (MediaStatusEnum.FINISHED, MediaStatusEnum.DROPPED):
                 end_date = _to_datetime(log.date)
-            db.add(
-                MediaLog(
-                    user_id=user_id,
-                    media_id=media.id,
-                    date=log.date,
-                    status=status,
-                    rating=log.rating if log.rating is not None else entry.rating,
-                    review=log.review or entry.review,
-                    start_date=log.start_date or _to_datetime(log.date),
-                    end_date=end_date,
-                )
+            new_log = MediaLog(
+                user_id=user_id,
+                media_id=media.id,
+                date=log.date,
+                status=status,
+                rating=log.rating if log.rating is not None else entry.rating,
+                review=log.review or entry.review,
+                start_date=log.start_date or _to_datetime(log.date),
+                end_date=end_date,
             )
-            existing_keys.add((log.date, status))
+            db.add(new_log)
+            existing_logs[key] = new_log
             outcome.logs += 1
             outcome.changed = True
 

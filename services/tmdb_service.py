@@ -1,20 +1,12 @@
 import httpx
 
 from config import settings
+from domain_errors import DomainError
+from services.http_client import get_async_client
 
 
 class TmdbService:
     """Proxy para a API do TMDB usando a chave resolvida (usuário ou instância)."""
-
-    def __init__(self) -> None:
-        self._client: httpx.AsyncClient | None = None
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                timeout=settings.tmdb_request_timeout, follow_redirects=True
-            )
-        return self._client
 
     async def _get(self, path: str, api_key: str, extra: dict | None = None) -> dict:
         params: dict[str, object] = {"api_key": api_key, "language": "en-US"}
@@ -22,22 +14,25 @@ class TmdbService:
             params.update(extra)
 
         try:
-            resp = await self._get_client().get(
+            client = get_async_client(
+                "tmdb", timeout=settings.tmdb_request_timeout
+            )
+            resp = await client.get(
                 f"{settings.tmdb_base_url}{path}", params=params
             )
         except httpx.HTTPError as exc:
-            raise ValueError(f"Falha ao contatar o TMDB: {exc}") from exc
+            raise DomainError(f"Falha ao contatar o TMDB: {exc}") from exc
 
         if resp.status_code == 401:
-            raise ValueError(
+            raise DomainError(
                 "O TMDB rejeitou a chave de API (401). Verifique a chave configurada."
             )
         if resp.status_code == 429:
-            raise ValueError(
+            raise DomainError(
                 "O TMDB limitou a taxa de requisições (429). Tente novamente em instantes."
             )
         if resp.status_code >= 400:
-            raise ValueError(f"O TMDB retornou um erro ({resp.status_code}).")
+            raise DomainError(f"O TMDB retornou um erro ({resp.status_code}).")
 
         return resp.json()
 

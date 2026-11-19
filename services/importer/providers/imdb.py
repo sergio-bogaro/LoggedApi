@@ -16,6 +16,7 @@ from schemas.import_schemas import (
     ImportPreviewResponse,
 )
 from services.importer.providers.base import ImportProvider
+from domain_errors import DomainError
 
 _MAX_ROWS = 50_000
 
@@ -69,7 +70,7 @@ class ImdbProvider(ImportProvider):
 
     async def parse_file(self, filename: str, raw: bytes) -> ImportPreviewResponse:
         if not raw:
-            raise ValueError("O arquivo enviado está vazio.")
+            raise DomainError("O arquivo enviado está vazio.")
 
         text = raw.decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(text))
@@ -78,13 +79,13 @@ class ImdbProvider(ImportProvider):
             for row in reader
         ]
         if not rows:
-            raise ValueError("CSV do IMDb vazio.")
+            raise DomainError("CSV do IMDb vazio.")
         if len(rows) > _MAX_ROWS:
-            raise ValueError("CSV do IMDb tem linhas demais.")
+            raise DomainError("CSV do IMDb tem linhas demais.")
 
         headers = set(rows[0].keys())
         if "const" not in headers:
-            raise ValueError(
+            raise DomainError(
                 "CSV do IMDb não reconhecido. Exporte em Your Ratings → Export "
                 "(ratings.csv ou watchlist.csv)."
             )
@@ -92,7 +93,7 @@ class ImdbProvider(ImportProvider):
         is_ratings = "your rating" in headers
         is_watchlist = "created" in headers
         if not is_ratings and not is_watchlist:
-            raise ValueError(
+            raise DomainError(
                 "CSV do IMDb sem nota nem data de watchlist. Envie o ratings.csv "
                 "(ou o watchlist.csv)."
             )

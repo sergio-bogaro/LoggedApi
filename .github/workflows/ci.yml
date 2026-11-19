@@ -25,7 +25,14 @@ jobs:
           pip install -r requirements.txt
 
       - name: Compile
-        run: python -m compileall -q main.py config.py database.py schemas services models routers
+        run: python -m compileall -q main.py config.py database.py schemas services models routers scripts migrations
+
+      - name: Migrations (banco novo)
+        env:
+          DATABASE_URL: sqlite:///./ci_migrations.db
+        run: |
+          alembic upgrade head
+          alembic check
 
       - name: Run tests
         run: python -m unittest discover -s tests -v

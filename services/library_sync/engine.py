@@ -16,13 +16,14 @@ from typing import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session, noload
 
-from database import SessionLocal
+from database import engine as db_engine
 from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.library_sync import (
     LibraryConnection,
     LibraryStatusMapping,
     LibrarySyncLink,
 )
+from services.http_client import close_loop_clients
 from models.media import Media
 from models.media_list_item import MediaListItem
 from models.media_log import MediaLog
@@ -41,11 +42,15 @@ from services.library_sync.suggestions import (
     pending_count,
     stage_suggestion,
 )
+from domain_errors import DomainError
 
 _STATUS_ACTIONS = {status.value for status in MediaStatusEnum}
 _PENDING_INTERVAL = timedelta(hours=24)
 _MAX_LIST = 50
 _SYNC_LOCK = threading.Lock()
+# O sync faz chamadas HTTP dentro do processamento de cada item. Commitar a
+# cada item mantém a transação de escrita curta (SQLite tem um único writer).
+_COMMIT_EVERY = 1
 
 ProgressCallback = Callable[[dict], None]
 
@@ -270,23 +275,28 @@ class LibrarySyncEngine:
             seen.add(item.source_id)
             summary["processed"] += 1
             try:
-                await self._process_item(
-                    db,
-                    connection,
-                    provider,
-                    snapshot,
-                    item,
-                    mappings,
-                    links,
-                    media_by_id,
-                    media_by_external,
-                    media_by_title,
-                    suggestions,
-                    summary,
-                    run_at,
-                )
+                # Savepoint por item: uma falha desfaz só este item, sem deixar
+                # a transação envenenada para os próximos.
+                with db.begin_nested():
+                    await self._process_item(
+                        db,
+                        connection,
+                        provider,
+                        snapshot,
+                        item,
+                        mappings,
+                        links,
+                        media_by_id,
+                        media_by_external,
+                        media_by_title,
+                        suggestions,
+                        summary,
+                        run_at,
+                    )
             except Exception as exc:  # noqa: BLE001 — um item não derruba o sync
                 summary["errors"].append(f"{item.title}: {exc}")
+            if index % _COMMIT_EVERY == 0:
+                db.commit()
             _report(
                 progress,
                 phase="syncing",
@@ -871,8 +881,8 @@ def sync_user(
     progress: ProgressCallback | None = None,
 ) -> dict:
     if not _SYNC_LOCK.acquire(blocking=False):
-        raise ValueError("Já existe uma sincronização em andamento. Tente novamente.")
-    db = SessionLocal()
+        raise DomainError("Já existe uma sincronização em andamento. Tente novamente.")
+    db = Session(bind=db_engine, expire_on_commit=False)
     try:
         connection = db.execute(
             select(LibraryConnection).where(
@@ -881,8 +891,17 @@ def sync_user(
             )
         ).scalar_one_or_none()
         if connection is None:
-            raise ValueError("Conexão não configurada.")
-        summary = asyncio.run(engine.sync(db, connection, run_at, progress))
+            raise DomainError("Conexão não configurada.")
+
+        async def _run_sync() -> dict:
+            try:
+                return await engine.sync(db, connection, run_at, progress)
+            finally:
+                # O sync roda em um loop próprio (asyncio.run): fecha os clientes
+                # HTTP criados nele para não vazar conexões.
+                await close_loop_clients()
+
+        summary = asyncio.run(_run_sync())
         return summary
     except Exception as exc:  # noqa: BLE001 — reportado no último sync
         db.rollback()
@@ -910,7 +929,7 @@ def sync_user(
             db.commit()
         if isinstance(exc, ValueError):
             raise
-        raise ValueError(f"Falha ao sincronizar com {provider}: {exc}") from exc
+        raise DomainError(f"Falha ao sincronizar com {provider}: {exc}") from exc
     finally:
         db.close()
         _SYNC_LOCK.release()

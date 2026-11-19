@@ -20,6 +20,7 @@ from services.library_sync.providers.common import (
     to_float,
     year_of,
 )
+from domain_errors import DomainError
 
 _API = "https://api.hardcover.app/v1/graphql"
 _PAGE = 1000
@@ -73,7 +74,7 @@ class HardcoverProvider(LibraryProvider):
     def _token(connection: LibraryConnection) -> str:
         token = str(LibraryProvider.auth(connection).get("token") or "").strip()
         if not token:
-            raise ValueError(
+            raise DomainError(
                 "Informe o Personal Access Token do Hardcover em Configurações > Integrações."
             )
         return token
@@ -97,19 +98,19 @@ class HardcoverProvider(LibraryProvider):
                 )
         if response.status_code in (401, 403):
             connection.needs_reauth = True
-            raise ValueError("Token do Hardcover inválido ou expirado.")
+            raise DomainError("Token do Hardcover inválido ou expirado.")
         response.raise_for_status()
         body = response.json()
         if body.get("errors"):
             message = body["errors"][0].get("message", "erro desconhecido")
-            raise ValueError(f"Hardcover: {message}")
+            raise DomainError(f"Hardcover: {message}")
         return body.get("data") or {}
 
     async def test(self, connection: LibraryConnection) -> str:
         data = await self._query(connection, "query { me { id username } }", {})
         me = data.get("me")
         if not isinstance(me, dict):
-            raise ValueError("Token do Hardcover inválido.")
+            raise DomainError("Token do Hardcover inválido.")
         return str(me.get("username") or me.get("id") or "Hardcover")
 
     async def fetch(
@@ -121,7 +122,7 @@ class HardcoverProvider(LibraryProvider):
             data = await self._query(connection, _QUERY, {"offset": offset})
             me = data.get("me")
             if not isinstance(me, dict):
-                raise ValueError("Token do Hardcover inválido.")
+                raise DomainError("Token do Hardcover inválido.")
             rows = me.get("user_books") or []
             for row in rows:
                 self._add(items, row)

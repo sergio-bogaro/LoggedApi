@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING
 
 import datetime
-from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, Integer, Text, func
+from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, Index, Integer, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -14,6 +14,11 @@ if TYPE_CHECKING:
 
 class MediaLog(Base):
     __tablename__ = "media_log"
+    __table_args__ = (
+        # Ordenações mais usadas: histórico por mídia e por usuário.
+        Index("ix_media_log_media_date", "media_id", "date"),
+        Index("ix_media_log_user_date", "user_id", "date"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)

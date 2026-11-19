@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -30,6 +31,22 @@ class Settings(BaseSettings):
 
     # Worker de importações em background. Desligado em testes.
     import_job_worker_enabled: bool = True
+
+    # Backup do banco e uploads (ver scripts/backup.py).
+    # Default local; em Docker use BACKUP_DIR=/data/backups.
+    backup_dir: str = "./backups"
+    backup_on_startup: bool = True
+    backup_include_uploads: bool = True
+    # Retenção GFS: janelas de períodos, não cotas de arquivos.
+    backup_keep_daily: int = Field(7, ge=0, le=365)
+    backup_keep_weekly: int = Field(4, ge=0, le=52)
+    backup_keep_monthly: int = Field(3, ge=0, le=120)
+
+    # Upload de imagens (MB).
+    max_upload_mb: int = Field(10, ge=1, le=200)
+
+    # Logging (INFO, DEBUG, WARNING...).
+    log_level: str = "INFO"
 
     # Credenciais de app para os sincronizadores de biblioteca.
     trakt_client_id: str | None = None

@@ -6,6 +6,7 @@ em vez de verificar a cada minuto.
 """
 
 import asyncio
+import logging
 
 from config import settings
 from database import SessionLocal
@@ -18,6 +19,8 @@ from services.sync_runs import sync_runs
 
 # Reavalia o relógio/banco no máximo uma vez por hora, mesmo sem mudanças.
 _MAX_SLEEP_SECONDS = 3600
+
+logger = logging.getLogger(__name__)
 
 
 class LibrarySyncScheduler:
@@ -57,8 +60,8 @@ class LibrarySyncScheduler:
                 if self._stop.is_set():
                     break
                 await self._tick()
-            except Exception as exc:  # noqa: BLE001 — o loop não pode morrer
-                print(f"Library sync scheduler: {exc}")
+            except Exception:  # noqa: BLE001 — o loop não pode morrer
+                logger.exception("Library sync scheduler")
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=60)
                 except asyncio.TimeoutError:
@@ -97,8 +100,8 @@ class LibrarySyncScheduler:
             try:
                 run, _started = sync_runs.start(user_id, "all")
                 await asyncio.to_thread(sync_runs.wait, run["id"])
-            except Exception as exc:  # noqa: BLE001 — um usuário não derruba os outros
-                print(f"Library sync scheduler (user {user_id}): {exc}")
+            except Exception:  # noqa: BLE001 — um usuário não derruba os outros
+                logger.exception("Library sync scheduler (user %s)", user_id)
 
 
 scheduler = LibrarySyncScheduler()

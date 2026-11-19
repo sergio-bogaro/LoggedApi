@@ -8,16 +8,17 @@ import asyncio
 import time
 
 import httpx
+from domain_errors import DomainError
+from services.http_client import get_async_client, get_loop_lock
 
 _OPENLIBRARY_URL = "https://openlibrary.org"
 _OPENLIBRARY_INTERVAL = 0.35
-_openlibrary_lock = asyncio.Lock()
 _openlibrary_next = 0.0
 
 
 async def _throttle() -> None:
     global _openlibrary_next
-    async with _openlibrary_lock:
+    async with get_loop_lock("openlibrary"):
         now = time.monotonic()
         slot = max(now, _openlibrary_next)
         _openlibrary_next = slot + _OPENLIBRARY_INTERVAL
@@ -39,24 +40,17 @@ def work_id_from_key(key: str | None) -> str:
 
 
 class OpenLibraryService:
-    def __init__(self) -> None:
-        self._client: httpx.AsyncClient | None = None
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=20.0, follow_redirects=True)
-        return self._client
-
     async def _get(self, path: str, params: dict | None = None) -> dict | None:
         resp = None
         for attempt in range(3):
             await _throttle()
             try:
-                resp = await self._get_client().get(
+                client = get_async_client("openlibrary", timeout=20.0)
+                resp = await client.get(
                     f"{_OPENLIBRARY_URL}{path}", params=params
                 )
             except httpx.HTTPError as exc:
-                raise ValueError(f"Falha ao contatar a OpenLibrary: {exc}") from exc
+                raise DomainError(f"Falha ao contatar a OpenLibrary: {exc}") from exc
             if resp.status_code < 500 and resp.status_code != 429:
                 break
             await asyncio.sleep(1.0 * (attempt + 1))
@@ -65,7 +59,7 @@ class OpenLibraryService:
         if resp.status_code == 404:
             return None
         if resp.status_code >= 400:
-            raise ValueError(f"A OpenLibrary retornou um erro ({resp.status_code}).")
+            raise DomainError(f"A OpenLibrary retornou um erro ({resp.status_code}).")
         return resp.json()
 
     async def search(self, query: str) -> list[dict]:

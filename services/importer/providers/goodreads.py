@@ -19,6 +19,7 @@ from schemas.import_schemas import (
     ImportPreviewResponse,
 )
 from services.importer.providers.base import ImportProvider
+from domain_errors import DomainError
 
 _MAX_ROWS = 50_000
 
@@ -82,7 +83,7 @@ class GoodreadsProvider(ImportProvider):
 
     async def parse_file(self, filename: str, raw: bytes) -> ImportPreviewResponse:
         if not raw:
-            raise ValueError("O arquivo enviado está vazio.")
+            raise DomainError("O arquivo enviado está vazio.")
 
         text = raw.decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(text))
@@ -91,12 +92,12 @@ class GoodreadsProvider(ImportProvider):
             for row in reader
         ]
         if not rows or "Title" not in (rows[0].keys() if rows else []):
-            raise ValueError(
+            raise DomainError(
                 "CSV do Goodreads não reconhecido. Exporte em My Books → Import and "
                 "export → Export Library."
             )
         if len(rows) > _MAX_ROWS:
-            raise ValueError("CSV do Goodreads tem linhas demais.")
+            raise DomainError("CSV do Goodreads tem linhas demais.")
 
         entries = [self._to_entry(row) for row in rows]
         entries = [entry for entry in entries if entry.title]

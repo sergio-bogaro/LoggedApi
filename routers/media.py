@@ -25,7 +25,7 @@ def list_media(
     search: str | None = None,
     tags: list[str] | None = Query(None, description="Filtrar por tags (AND)"),
     has_logs: bool | None = Query(None, description="Apenas mídias com logs"),
-    limit: int | None = Query(None, ge=1, description="Limitar quantidade de resultados"),
+    limit: int = Query(200, ge=1, le=500, description="Quantidade máxima de resultados"),
     offset: int = Query(0, ge=0, description="Número de itens a pular (paginação)"),
     db: Session = Depends(get_db),
 ):

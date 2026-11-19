@@ -34,6 +34,7 @@ from services.import_jobs.serializers import job_response
 from services.import_jobs.service import service as import_job_service
 from services.import_jobs.storage import save_import_file
 from services.library_sync.providers.base import LibraryProvider
+from domain_errors import DomainError
 
 router = APIRouter(prefix="/api/import", tags=["Import"])
 
@@ -51,7 +52,7 @@ async def _read_limited(file: UploadFile) -> bytes:
     while chunk := await file.read(1024 * 1024):
         total += len(chunk)
         if total > MAX_IMPORT_FILE_SIZE:
-            raise ValueError(
+            raise DomainError(
                 "Arquivo de importação muito grande. Máximo: "
                 f"{MAX_IMPORT_FILE_SIZE // (1024 * 1024)}MB."
             )
@@ -90,12 +91,12 @@ async def create_import_job(
     try:
         if input_type == "file":
             if file is None:
-                raise ValueError("Envie o arquivo da importação.")
+                raise DomainError("Envie o arquivo da importação.")
             raw = await _read_limited(file)
             file_path, file_name = save_import_file(file.filename, raw)
         elif input_type == "url":
             if not source_url or not source_url.strip():
-                raise ValueError("Informe a URL do servidor.")
+                raise DomainError("Informe a URL do servidor.")
         elif input_type == "connection":
             connection = db.execute(
                 select(LibraryConnection).where(
@@ -109,12 +110,12 @@ async def create_import_job(
                 or str(auth.get("token") or "").strip()
                 or str(auth.get("access_token") or "").strip()
             ):
-                raise ValueError(
+                raise DomainError(
                     f"Conecte sua conta do {provider.label} em Configurações > Integrações."
                 )
         else:
             if not username or not username.strip():
-                raise ValueError("Informe o username.")
+                raise DomainError("Informe o username.")
 
         job = import_job_service.create(
             db,
@@ -220,11 +221,11 @@ async def parse_provider(
     provider = get_provider(provider_id)
     if provider.input_type == "url":
         if not source_url:
-            raise ValueError("Informe a URL do servidor Suwayomi.")
+            raise DomainError("Informe a URL do servidor Suwayomi.")
         return await provider.parse_url(source_url, media_type, db, user_id)
     if provider.input_type == "file":
         if file is None:
-            raise ValueError("Envie o arquivo da importação.")
+            raise DomainError("Envie o arquivo da importação.")
         raw = await _read_limited(file)
         return await run_in_threadpool(
             _parse_file_sync, provider, file.filename or "", raw
@@ -232,7 +233,7 @@ async def parse_provider(
     if provider.input_type == "connection":
         return await provider.parse_connection(db, user_id, media_type)
     if not username:
-        raise ValueError("Informe o username.")
+        raise DomainError("Informe o username.")
     return await provider.parse_username(username, media_type)
 
 
@@ -249,10 +250,8 @@ async def search_import(
     data: ImportSearchRequest, db: Session = Depends(get_db)
 ) -> list[ImportCandidate]:
     """Busca manual de candidatos para corrigir um match."""
-    tmdb_key = resolve_tmdb_key(db, data.user_id) if data.user_id is not None else None
-    igdb_credentials = (
-        resolve_igdb_credentials(db, data.user_id) if data.user_id is not None else (None, None)
-    )
+    tmdb_key = resolve_tmdb_key(db, data.user_id)
+    igdb_credentials = resolve_igdb_credentials(db, data.user_id)
     return await matcher.search(data.media_type, data.query, tmdb_key, igdb_credentials)
 
 

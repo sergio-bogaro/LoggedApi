@@ -19,23 +19,19 @@ from schemas.import_schemas import (
     ImportPreviewResponse,
 )
 from services.importer.providers.base import ImportProvider
+from domain_errors import DomainError
 
 _KNOWN_FILES = {"watched.csv", "diary.csv", "ratings.csv", "reviews.csv", "watchlist.csv"}
-_MAX_ARCHIVE_ENTRIES = 200
+# O export inclui cópias fora da raiz: reviews que o usuário curtiu (`likes/`),
+# conteúdo apagado (`deleted/`) e órfão (`orphaned/`). Não são o histórico do
+# usuário (e `likes/reviews.csv` tem outro header); nunca devem substituir os
+# arquivos canônicos da raiz.
+_IGNORED_DIRS = {"likes", "deleted", "orphaned"}
 _MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 
 
 def _normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
-
-
-def _slug_from_uri(uri: str | None) -> str:
-    parts = [part for part in (uri or "").split("/") if part]
-    if "film" in parts:
-        index = parts.index("film")
-        if index + 1 < len(parts):
-            return parts[index + 1]
-    return parts[-1] if parts else ""
 
 
 def _to_int(value: str | None) -> int | None:
@@ -100,11 +96,11 @@ class LetterboxdProvider(ImportProvider):
 
     async def parse_file(self, filename: str, raw: bytes) -> ImportPreviewResponse:
         if not raw:
-            raise ValueError("O arquivo enviado está vazio.")
+            raise DomainError("O arquivo enviado está vazio.")
 
         files = self._extract_files(filename, raw)
         if not files:
-            raise ValueError(
+            raise DomainError(
                 "Nenhum arquivo reconhecido do Letterboxd foi encontrado. "
                 "Envie o ZIP exportado pelo Letterboxd (watched.csv, diary.csv, "
                 "ratings.csv, reviews.csv, watchlist.csv)."
@@ -142,25 +138,35 @@ class LetterboxdProvider(ImportProvider):
             result: dict[str, bytes] = {}
             try:
                 with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                    infos = [
-                        info
-                        for info in archive.infolist()
-                        if info.filename.rsplit("/", 1)[-1].lower() in _KNOWN_FILES
-                    ]
-                    if len(infos) > _MAX_ARCHIVE_ENTRIES:
-                        raise ValueError("O ZIP do Letterboxd tem entradas demais.")
-                    if sum(info.file_size for info in infos) > _MAX_UNCOMPRESSED_BYTES:
-                        raise ValueError("O ZIP do Letterboxd é grande demais.")
-                    total = 0
-                    for info in infos:
-                        base = info.filename.rsplit("/", 1)[-1].lower()
-                        content = archive.read(info)
-                        total += len(content)
-                        if total > _MAX_UNCOMPRESSED_BYTES:
-                            raise ValueError("O ZIP do Letterboxd é grande demais.")
-                        result[base] = content
+                    # Um mesmo basename aparece em vários lugares do export.
+                    # Fica com o caminho mais raso (a raiz do export), ignorando
+                    # as pastas que não representam o histórico do usuário.
+                    selected: dict[str, tuple[int, zipfile.ZipInfo]] = {}
+                    for info in archive.infolist():
+                        parts = [
+                            part.lower()
+                            for part in info.filename.replace("\\", "/").split("/")
+                            if part
+                        ]
+                        if not parts:
+                            continue
+                        base = parts[-1]
+                        if base not in _KNOWN_FILES:
+                            continue
+                        if any(part in _IGNORED_DIRS for part in parts[:-1]):
+                            continue
+                        depth = len(parts) - 1
+                        current = selected.get(base)
+                        if current is None or depth < current[0]:
+                            selected[base] = (depth, info)
+
+                    total = sum(info.file_size for _, info in selected.values())
+                    if total > _MAX_UNCOMPRESSED_BYTES:
+                        raise DomainError("O ZIP do Letterboxd é grande demais.")
+                    for base, (_, info) in selected.items():
+                        result[base] = archive.read(info)
             except (zipfile.BadZipFile, OSError) as exc:
-                raise ValueError(
+                raise DomainError(
                     "O ZIP do Letterboxd não pôde ser lido. Envie o export completo."
                 ) from exc
             return result
@@ -196,8 +202,11 @@ class LetterboxdProvider(ImportProvider):
     ) -> _FilmAccumulator | None:
         if not name:
             return None
-        slug = _slug_from_uri(uri)
-        base = slug or _normalize(name).replace(" ", "-")
+        # A URI não serve como identidade: em reviews.csv ela é o permalink da
+        # review (boxd.it/6fLZyP), enquanto watched.csv/ratings.csv usam o link
+        # do filme (boxd.it/2bf0). Título normalizado + ano é estável entre as
+        # fontes e é a mesma base que o matcher usa.
+        base = _normalize(name).replace(" ", "-")
         key = f"{base}|{year or ''}"
         acc = accumulators.get(key)
         if acc is None:

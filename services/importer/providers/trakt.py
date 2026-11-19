@@ -20,6 +20,7 @@ from schemas.import_schemas import (
     ImportPreviewResponse,
 )
 from services.importer.providers.base import ImportProvider
+from domain_errors import DomainError
 
 _MAX_ARCHIVE_ENTRIES = 2000
 _MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
@@ -84,11 +85,11 @@ class TraktProvider(ImportProvider):
 
     async def parse_file(self, filename: str, raw: bytes) -> ImportPreviewResponse:
         if not raw:
-            raise ValueError("O arquivo enviado está vazio.")
+            raise DomainError("O arquivo enviado está vazio.")
         try:
             archive = zipfile.ZipFile(io.BytesIO(raw))
         except zipfile.BadZipFile as exc:
-            raise ValueError(
+            raise DomainError(
                 "Envie o ZIP exportado pelo Trakt (Settings → Data → Export now)."
             ) from exc
 
@@ -97,9 +98,9 @@ class TraktProvider(ImportProvider):
         with archive:
             infos = archive.infolist()
             if len(infos) > _MAX_ARCHIVE_ENTRIES:
-                raise ValueError("O ZIP do Trakt tem entradas demais.")
+                raise DomainError("O ZIP do Trakt tem entradas demais.")
             if sum(info.file_size for info in infos) > _MAX_UNCOMPRESSED_BYTES:
-                raise ValueError("O ZIP do Trakt é grande demais.")
+                raise DomainError("O ZIP do Trakt é grande demais.")
 
             total = 0
             for info in infos:
@@ -126,7 +127,7 @@ class TraktProvider(ImportProvider):
                     content = archive.read(info)
                     total += len(content)
                     if total > _MAX_UNCOMPRESSED_BYTES:
-                        raise ValueError("O ZIP do Trakt é grande demais.")
+                        raise DomainError("O ZIP do Trakt é grande demais.")
                     data = json.loads(content.decode("utf-8-sig", errors="replace"))
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
@@ -139,7 +140,7 @@ class TraktProvider(ImportProvider):
                         self._accumulate(target, obj, entry, field_name)
 
         if not movies and not shows:
-            raise ValueError("Nenhum filme ou série reconhecido no export do Trakt.")
+            raise DomainError("Nenhum filme ou série reconhecido no export do Trakt.")
 
         entries = self._finalize_all(movies, MediaTypeEnum.MOVIES) + self._finalize_all(
             shows, MediaTypeEnum.SERIES

@@ -9,6 +9,7 @@ from services.library_sync.providers.mal import MalProvider
 from services.library_sync.providers.openlibrary import OpenLibraryProvider
 from services.library_sync.providers.simkl import SimklProvider
 from services.library_sync.providers.trakt import TraktProvider
+from domain_errors import DomainError
 
 _PROVIDERS: list[LibraryProvider] = [
     AniListProvider(),
@@ -32,5 +33,5 @@ def list_providers() -> list[LibraryProvider]:
 def get_provider(provider_id: str) -> LibraryProvider:
     provider = _PROVIDER_MAP.get(provider_id)
     if provider is None:
-        raise ValueError(f"Provedor de sincronização desconhecido: '{provider_id}'.")
+        raise DomainError(f"Provedor de sincronização desconhecido: '{provider_id}'.")
     return provider

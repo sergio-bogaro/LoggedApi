@@ -22,6 +22,7 @@ from services.library_sync.providers.common import (
     to_float,
     year_of,
 )
+from domain_errors import DomainError
 
 _QUERY = """
 query ($userName: String, $type: MediaType) {
@@ -74,10 +75,10 @@ class AniListProvider(LibraryProvider):
     async def test(self, connection: LibraryConnection) -> str:
         username = str(self.auth(connection).get("username") or "").strip()
         if not username:
-            raise ValueError("Informe o username do AniList.")
+            raise DomainError("Informe o username do AniList.")
         user = await anilist_service.get_user(username)
         if not user:
-            raise ValueError("Username do AniList não encontrado.")
+            raise DomainError("Username do AniList não encontrado.")
         return str(user.get("name") or username)
 
     async def fetch(
@@ -85,7 +86,7 @@ class AniListProvider(LibraryProvider):
     ) -> SourceSnapshot:
         username = str(self.auth(connection).get("username") or "").strip()
         if not username:
-            raise ValueError("Informe o username do AniList.")
+            raise DomainError("Informe o username do AniList.")
 
         items: dict[int, SourceItem] = {}
         for media_type in self.media_types:
@@ -95,7 +96,7 @@ class AniListProvider(LibraryProvider):
             )
             collection = data.get("MediaListCollection")
             if not collection:
-                raise ValueError(
+                raise DomainError(
                     "Lista do AniList não encontrada. Verifique o username e se o "
                     "perfil é público."
                 )

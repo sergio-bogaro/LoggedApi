@@ -19,6 +19,7 @@ from schemas.import_schemas import (
     ImportPreviewResponse,
 )
 from services.importer.providers.base import ImportProvider
+from domain_errors import DomainError
 
 # 1 watching/reading, 2 completed, 3 on hold, 4 dropped, 6 plan to watch/read.
 _STATUS_MAP: dict[str, MediaStatusEnum | None] = {
@@ -69,18 +70,18 @@ class MalProvider(ImportProvider):
 
     async def parse_file(self, filename: str, raw: bytes) -> ImportPreviewResponse:
         if not raw:
-            raise ValueError("O arquivo enviado está vazio.")
+            raise DomainError("O arquivo enviado está vazio.")
 
         data = self._maybe_gunzip(raw, filename)
         try:
             root = SafeET.fromstring(data)
         except (ET.ParseError, DefusedXmlException) as exc:
-            raise ValueError("Não foi possível ler o XML do MyAnimeList.") from exc
+            raise DomainError("Não foi possível ler o XML do MyAnimeList.") from exc
 
         anime_entries = root.findall("anime/entry")
         manga_entries = root.findall("manga/entry")
         if len(anime_entries) + len(manga_entries) > _MAX_ENTRIES:
-            raise ValueError("O XML do MyAnimeList tem entradas demais.")
+            raise DomainError("O XML do MyAnimeList tem entradas demais.")
 
         entries = [
             self._to_entry(element, MediaTypeEnum.ANIME) for element in anime_entries
@@ -89,7 +90,7 @@ class MalProvider(ImportProvider):
         ]
 
         if not entries:
-            raise ValueError(
+            raise DomainError(
                 "Nenhuma lista de anime ou mangá foi encontrada. Exporte a lista no "
                 "MyAnimeList (myanimelist.net/panel.php?go=export) e envie o .xml.gz."
             )
@@ -112,7 +113,7 @@ class MalProvider(ImportProvider):
             try:
                 return gzip.decompress(raw)
             except OSError as exc:
-                raise ValueError("O arquivo .gz não pôde ser descompactado.") from exc
+                raise DomainError("O arquivo .gz não pôde ser descompactado.") from exc
         return raw
 
     def _to_entry(self, element: ET.Element, media_type: MediaTypeEnum) -> ImportEntry:

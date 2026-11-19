@@ -28,6 +28,7 @@ from services.import_jobs.serializers import (
     set_counts,
 )
 from services.import_jobs.storage import delete_job_file
+from domain_errors import DomainError
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -132,7 +133,7 @@ def _filter_condition(name: str | None):
         )
     if name == "ignored":
         return ImportJobItem.ignored.is_(True)
-    raise ValueError(f"Filtro de importação inválido: '{name}'.")
+    raise DomainError(f"Filtro de importação inválido: '{name}'.")
 
 
 class ImportJobService:
@@ -236,7 +237,7 @@ class ImportJobService:
     ) -> ImportJobItemResponse:
         job = self.get(db, job_id, user_id)
         if job.status != "ready":
-            raise ValueError(
+            raise DomainError(
                 "A importação ainda não está pronta para revisão. Aguarde o matching."
             )
 
@@ -267,7 +268,7 @@ class ImportJobService:
     ) -> ImportCommitResponse:
         job = self.get(db, job_id, user_id)
         if job.status != "ready":
-            raise ValueError("A importação não está pronta para ser confirmada.")
+            raise DomainError("A importação não está pronta para ser confirmada.")
 
         # Fase 3A: processa todos os itens não ignorados do job. A Fase 3B
         # (roadmap no README) adicionará um filtro opcional por item_ids e
@@ -297,7 +298,7 @@ class ImportJobService:
                 entries.append(entry)
 
         if not entries:
-            raise ValueError(
+            raise DomainError(
                 "Nenhum item selecionado. Escolha ao menos um match antes de importar."
             )
 
@@ -343,7 +344,7 @@ class ImportJobService:
             job.cancel_requested = True
             job.finished_at = utcnow()
         else:
-            raise ValueError("Esta importação não pode mais ser cancelada.")
+            raise DomainError("Esta importação não pode mais ser cancelada.")
 
         db.commit()
         db.refresh(job)
@@ -352,7 +353,7 @@ class ImportJobService:
     def delete(self, db: Session, job_id: int, user_id: int) -> None:
         job = self.get(db, job_id, user_id)
         if job.status in ("parsing", "matching"):
-            raise ValueError("Cancele a importação antes de excluí-la.")
+            raise DomainError("Cancele a importação antes de excluí-la.")
         delete_job_file(job)
         db.query(ImportJobItem).filter(ImportJobItem.job_id == job.id).delete()
         db.delete(job)

@@ -42,6 +42,7 @@ from services.library_sync.suggestions import (
     set_suggestion_state,
     suggestion_logs,
 )
+from domain_errors import DomainError
 
 ReviewSourceFilter = Literal["manual", "sync", "all"]
 ReviewStateFilter = Literal["pending", "approved", "dismissed", "failed", "all"]
@@ -55,11 +56,11 @@ _MANUAL_JOB_STATUSES = ("ready", "done")
 def parse_key(key: str) -> tuple[str, int]:
     source, _, raw = (key or "").partition(":")
     if source not in ("manual", "sync"):
-        raise ValueError(f"Item de revisão inválido: '{key}'.")
+        raise DomainError(f"Item de revisão inválido: '{key}'.")
     try:
         item_id = int(raw)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"Item de revisão inválido: '{key}'.") from exc
+        raise DomainError(f"Item de revisão inválido: '{key}'.") from exc
     return source, item_id
 
 
@@ -538,12 +539,12 @@ class ReviewService:
         if source == "manual":
             item = db.get(ImportJobItem, item_id)
             if item is None:
-                raise ValueError("Item de revisão não encontrado.")
+                raise DomainError("Item de revisão não encontrado.")
             job = db.get(ImportJob, item.job_id)
             if job is None or job.user_id != user_id:
-                raise ValueError("Item de revisão não encontrado.")
+                raise DomainError("Item de revisão não encontrado.")
             if job.status != "ready":
-                raise ValueError("Esta importação não está pronta para revisão.")
+                raise DomainError("Esta importação não está pronta para revisão.")
             import_job_service.patch_item(
                 db,
                 job.id,
@@ -558,9 +559,9 @@ class ReviewService:
 
         suggestion = db.get(LibrarySyncSuggestion, item_id)
         if suggestion is None or suggestion.user_id != user_id:
-            raise ValueError("Item de revisão não encontrado.")
+            raise DomainError("Item de revisão não encontrado.")
         if suggestion.review_state == "approved":
-            raise ValueError("Este título já foi adicionado à biblioteca.")
+            raise DomainError("Este título já foi adicionado à biblioteca.")
         if selected is not None:
             set_suggestion_candidate(db, user_id, suggestion.id, selected)
         if ignored is not None:
@@ -578,9 +579,9 @@ class ReviewService:
         self, db: Session, user_id: int, keys: list[str], state: str
     ) -> None:
         if not keys:
-            raise ValueError("Selecione ao menos um item.")
+            raise DomainError("Selecione ao menos um item.")
         if state not in ("pending", "dismissed"):
-            raise ValueError("Estado inválido para revisão.")
+            raise DomainError("Estado inválido para revisão.")
         manual_ids: list[int] = []
         sync_ids: list[int] = []
         for key in keys:
@@ -591,12 +592,12 @@ class ReviewService:
         for item_id in manual_ids:
             item = db.get(ImportJobItem, item_id)
             if item is None:
-                raise ValueError("Item de revisão não encontrado.")
+                raise DomainError("Item de revisão não encontrado.")
             job = db.get(ImportJob, item.job_id)
             if job is None or job.user_id != user_id:
-                raise ValueError("Item de revisão não encontrado.")
+                raise DomainError("Item de revisão não encontrado.")
             if job.status != "ready":
-                raise ValueError("Esta importação não está pronta para revisão.")
+                raise DomainError("Esta importação não está pronta para revisão.")
             item.ignored = state == "dismissed"
             _persist_suwayomi_ignore(db, user_id, item, item.ignored)
             jobs[job.id] = job
@@ -604,9 +605,9 @@ class ReviewService:
         for suggestion_id in sync_ids:
             suggestion = db.get(LibrarySyncSuggestion, suggestion_id)
             if suggestion is None or suggestion.user_id != user_id:
-                raise ValueError("Item de revisão não encontrado.")
+                raise DomainError("Item de revisão não encontrado.")
             if suggestion.review_state == "approved":
-                raise ValueError("Este título já foi adicionado à biblioteca.")
+                raise DomainError("Este título já foi adicionado à biblioteca.")
             set_suggestion_state(db, user_id, suggestion_id, state)
 
         db.flush()
@@ -622,7 +623,7 @@ class ReviewService:
         add_to_backlog: bool = True,
     ) -> ReviewCommitResponse:
         if not keys:
-            raise ValueError("Selecione ao menos um item.")
+            raise DomainError("Selecione ao menos um item.")
 
         manual_ids: list[int] = []
         sync_ids: list[int] = []
@@ -640,12 +641,12 @@ class ReviewService:
         for item_id in manual_ids:
             item = db.get(ImportJobItem, item_id)
             if item is None:
-                raise ValueError("Item de revisão não encontrado.")
+                raise DomainError("Item de revisão não encontrado.")
             job = db.get(ImportJob, item.job_id)
             if job is None or job.user_id != user_id:
-                raise ValueError("Item de revisão não encontrado.")
+                raise DomainError("Item de revisão não encontrado.")
             if job.status != "ready":
-                raise ValueError("Esta importação não está pronta para revisão.")
+                raise DomainError("Esta importação não está pronta para revisão.")
             if job.id not in job_ids:
                 job_ids.append(job.id)
 
@@ -722,9 +723,9 @@ class ReviewService:
             for suggestion_id in sync_ids:
                 suggestion = db.get(LibrarySyncSuggestion, suggestion_id)
                 if suggestion is None or suggestion.user_id != user_id:
-                    raise ValueError("Item de revisão não encontrado.")
+                    raise DomainError("Item de revisão não encontrado.")
                 if suggestion.review_state != "pending":
-                    raise ValueError("Este título não está mais pendente.")
+                    raise DomainError("Este título não está mais pendente.")
                 suggestions.append(suggestion)
 
             result = approve_suggestions(db, user_id, sync_ids)

@@ -8,6 +8,7 @@ from services.importer.providers.library_sync import LibrarySyncImportProvider
 from services.importer.providers.mal import MalProvider
 from services.importer.providers.suwayomi import SuwayomiProvider
 from services.importer.providers.trakt import TraktProvider
+from domain_errors import DomainError
 
 _PROVIDERS: list = [
     LetterboxdProvider(),
@@ -34,5 +35,5 @@ def list_providers() -> list:
 def get_provider(provider_id: str):
     provider = _PROVIDER_MAP.get(provider_id)
     if provider is None:
-        raise ValueError(f"Provedor de importação desconhecido: '{provider_id}'.")
+        raise DomainError(f"Provedor de importação desconhecido: '{provider_id}'.")
     return provider

@@ -7,6 +7,7 @@ confiável. Tudo vira `datetime` (meia-noite) ou `None`.
 
 import re
 from datetime import date, datetime, time
+from domain_errors import DomainError
 
 _PARTIAL_DATE_RE = re.compile(r"^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?$")
 
@@ -19,7 +20,7 @@ def parse_optional_datetime(value: object) -> datetime | None:
     if isinstance(value, date):
         return datetime.combine(value, time.min)
     if not isinstance(value, str):
-        raise ValueError("Data inválida. Use o formato AAAA-MM-DD.")
+        raise DomainError("Data inválida. Use o formato AAAA-MM-DD.")
 
     raw = value.strip()
     if not raw:
@@ -33,11 +34,11 @@ def parse_optional_datetime(value: object) -> datetime | None:
         try:
             return datetime(year, month, day)
         except ValueError as exc:
-            raise ValueError("Data inválida. Verifique ano, mês e dia.") from exc
+            raise DomainError("Data inválida. Verifique ano, mês e dia.") from exc
 
     try:
         return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
     except ValueError as exc:
-        raise ValueError(
+        raise DomainError(
             "Data inválida. Use AAAA-MM-DD (ou envie vazio para omitir a data)."
         ) from exc

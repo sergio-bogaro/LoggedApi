@@ -22,6 +22,7 @@ from schemas.import_schemas import (
 )
 from services.importer.commit import committer
 from services.library_sync.providers.base import SourceItem
+from domain_errors import DomainError
 
 _REVIEW_STATES = ("pending", "approved", "dismissed")
 _ENDED_STATUSES = (MediaStatusEnum.FINISHED, MediaStatusEnum.DROPPED)
@@ -370,7 +371,7 @@ def approve_suggestions(
     db: Session, user_id: int, ids: list[int]
 ) -> dict:
     if not ids:
-        raise ValueError("Selecione ao menos um título para adicionar.")
+        raise DomainError("Selecione ao menos um título para adicionar.")
     suggestions = (
         db.execute(
             select(LibrarySyncSuggestion).where(
@@ -383,7 +384,7 @@ def approve_suggestions(
         .all()
     )
     if not suggestions:
-        raise ValueError("Nenhuma sugestão pendente foi encontrada.")
+        raise DomainError("Nenhuma sugestão pendente foi encontrada.")
 
     entries: list[tuple[LibrarySyncSuggestion, ImportCommitEntry]] = []
     failures: list[ImportFailure] = []
@@ -467,12 +468,12 @@ def set_suggestion_state(
     db: Session, user_id: int, suggestion_id: int, state: str
 ) -> LibrarySyncSuggestion:
     if state not in ("pending", "dismissed"):
-        raise ValueError("Estado inválido para a sugestão.")
+        raise DomainError("Estado inválido para a sugestão.")
     suggestion = db.get(LibrarySyncSuggestion, suggestion_id)
     if suggestion is None or suggestion.user_id != user_id:
-        raise ValueError("Sugestão não encontrada.")
+        raise DomainError("Sugestão não encontrada.")
     if suggestion.review_state == "approved":
-        raise ValueError("Este título já foi adicionado à biblioteca.")
+        raise DomainError("Este título já foi adicionado à biblioteca.")
 
     suggestion.review_state = state
     suggestion.decided_at = utcnow() if state == "dismissed" else None
@@ -511,11 +512,11 @@ def set_suggestion_candidate(
 ) -> LibrarySyncSuggestion:
     suggestion = db.get(LibrarySyncSuggestion, suggestion_id)
     if suggestion is None or suggestion.user_id != user_id:
-        raise ValueError("Sugestão não encontrada.")
+        raise DomainError("Sugestão não encontrada.")
     if suggestion.review_state == "approved":
-        raise ValueError("Este título já foi adicionado à biblioteca.")
+        raise DomainError("Este título já foi adicionado à biblioteca.")
     if candidate.media_type != suggestion.media_type:
-        raise ValueError("O match escolhido é de outro tipo de mídia.")
+        raise DomainError("O match escolhido é de outro tipo de mídia.")
 
     suggestion.candidate_json = candidate_to_json(candidate)
     existing = candidates_from_json(suggestion.candidates_json)

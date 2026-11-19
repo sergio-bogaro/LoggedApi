@@ -19,6 +19,7 @@ from schemas.import_schemas import (
 )
 from services.importer.providers.base import ImportProvider
 from services.importer.providers.games_common import is_backlog_status, map_game_status
+from domain_errors import DomainError
 
 _MAX_ROWS = 50_000
 
@@ -87,7 +88,7 @@ class InfiniteBacklogProvider(ImportProvider):
 
     async def parse_file(self, filename: str, raw: bytes) -> ImportPreviewResponse:
         if not raw:
-            raise ValueError("O arquivo enviado está vazio.")
+            raise DomainError("O arquivo enviado está vazio.")
 
         text = raw.decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(text))
@@ -96,9 +97,9 @@ class InfiniteBacklogProvider(ImportProvider):
             for row in reader
         ]
         if not rows:
-            raise ValueError("CSV do Infinite Backlog vazio.")
+            raise DomainError("CSV do Infinite Backlog vazio.")
         if len(rows) > _MAX_ROWS:
-            raise ValueError("CSV do Infinite Backlog tem linhas demais.")
+            raise DomainError("CSV do Infinite Backlog tem linhas demais.")
 
         ratings = [_to_float(_first(row, _RATING_KEYS)) for row in rows]
         ratings = [rating for rating in ratings if rating is not None]
@@ -112,7 +113,7 @@ class InfiniteBacklogProvider(ImportProvider):
                 entries.append(entry)
 
         if not entries:
-            raise ValueError("Nenhum jogo reconhecido no CSV do Infinite Backlog.")
+            raise DomainError("Nenhum jogo reconhecido no CSV do Infinite Backlog.")
 
         counts = ImportPreviewCounts(
             total=len(entries),

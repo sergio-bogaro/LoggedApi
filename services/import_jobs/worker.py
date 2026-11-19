@@ -7,7 +7,7 @@ retoma o job sem refazer o que já foi casado.
 
 import asyncio
 import json
-import traceback
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,9 +30,12 @@ from services.import_jobs.serializers import (
     store_logs,
 )
 from services.import_jobs.storage import delete_job_file
+from domain_errors import DomainError
 
 _MATCH_BATCH = 20
 _TICK_SECONDS = 2
+
+logger = logging.getLogger(__name__)
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -96,8 +99,8 @@ class ImportJobWorker:
                 await self._tick()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 — o loop não pode morrer
-                print(f"Import job worker: {exc}")
+            except Exception:  # noqa: BLE001 — o loop não pode morrer
+                logger.exception("Import job worker")
 
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=_TICK_SECONDS)
@@ -132,7 +135,7 @@ class ImportJobWorker:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — reportado no job
-            traceback.print_exc()
+            logger.exception("Import job %s falhou", job_id)
             db.rollback()
             job = db.get(ImportJob, job_id)
             if job is not None:
@@ -161,7 +164,7 @@ class ImportJobWorker:
 
         if job.input_type == "file":
             if not job.file_path or not Path(job.file_path).exists():
-                raise ValueError("O arquivo da importação não está mais disponível.")
+                raise DomainError("O arquivo da importação não está mais disponível.")
             raw = Path(job.file_path).read_bytes()
             preview = await asyncio.to_thread(
                 _parse_file_sync, provider, job.file_name or "", raw
@@ -180,7 +183,7 @@ class ImportJobWorker:
             )
 
         if not preview.entries:
-            raise ValueError("Nenhum item encontrado na fonte da importação.")
+            raise DomainError("Nenhum item encontrado na fonte da importação.")
 
         db.refresh(job)
         if job.cancel_requested:

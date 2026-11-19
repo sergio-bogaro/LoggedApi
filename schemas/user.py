@@ -3,6 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
+from domain_errors import DomainError
 
 _NON_NULLABLE_UPDATE_FIELDS = (
     "username",
@@ -78,7 +79,7 @@ class UserUpdate(BaseModel):
         for field in _NON_NULLABLE_UPDATE_FIELDS:
             for key in (field, to_camel(field)):
                 if key in data and data[key] is None:
-                    raise ValueError(f"O campo '{key}' não pode ser nulo.")
+                    raise DomainError(f"O campo '{key}' não pode ser nulo.")
         return data
 
 

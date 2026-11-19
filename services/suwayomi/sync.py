@@ -34,6 +34,7 @@ from services.suwayomi.categories import (
     resolve_action,
 )
 from services.suwayomi.client import SuwayomiClient
+from domain_errors import DomainError
 
 _PENDING_RETRY_INTERVAL = timedelta(hours=24)
 ProgressCallback = Callable[[dict], None]
@@ -319,7 +320,7 @@ class SuwayomiSyncService:
         """Executa o sync em uma thread própria (abre sessão e event loop)."""
         with self._lock:
             if user_id in self._running:
-                raise ValueError("Já existe uma sincronização do Suwayomi em andamento.")
+                raise DomainError("Já existe uma sincronização do Suwayomi em andamento.")
             self._running.add(user_id)
 
         try:
@@ -329,7 +330,7 @@ class SuwayomiSyncService:
                     select(SuwayomiAccount).where(SuwayomiAccount.user_id == user_id)
                 ).scalar_one_or_none()
                 if account is None:
-                    raise ValueError("O Suwayomi ainda não foi configurado.")
+                    raise DomainError("O Suwayomi ainda não foi configurado.")
                 return asyncio.run(self._sync(db, account, run_at, progress))
             finally:
                 db.close()
@@ -417,7 +418,7 @@ class SuwayomiSyncService:
         user_id = account.user_id
         mappings = _load_mappings(db, user_id)
         if not mappings:
-            raise ValueError(
+            raise DomainError(
                 "Nenhuma categoria do Suwayomi foi mapeada. "
                 "Configure em Configurações → Integrações."
             )

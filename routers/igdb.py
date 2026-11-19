@@ -5,6 +5,7 @@ from database import get_db
 from schemas.igdb import IgdbGame, IgdbSearchItem, IgdbSearchRequest
 from services.credentials_service import igdb_source, resolve_igdb_credentials
 from services.igdb_service import IgdbService
+from domain_errors import DomainError
 
 router = APIRouter(prefix="/api/igdb", tags=["IGDB"])
 
@@ -13,7 +14,7 @@ service = IgdbService()
 
 def _require_credentials(client_id: str | None, client_secret: str | None) -> tuple[str, str]:
     if not client_id or not client_secret:
-        raise ValueError(
+        raise DomainError(
             "Nenhuma credencial do IGDB configurada. Informe o Client ID e o Secret."
         )
     return client_id, client_secret

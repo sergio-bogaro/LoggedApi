@@ -7,6 +7,7 @@ resolução do `external_id` do app fica a cargo do matcher.
 
 from models.enums import MediaTypeEnum
 from schemas.import_schemas import ImportPreviewResponse, ImportProviderInfo
+from domain_errors import DomainError
 
 
 class ImportProvider:
@@ -30,19 +31,19 @@ class ImportProvider:
         )
 
     async def parse_file(self, filename: str, raw: bytes) -> ImportPreviewResponse:
-        raise ValueError("Este provedor não aceita arquivo.")
+        raise DomainError("Este provedor não aceita arquivo.")
 
     async def parse_username(
         self, username: str, media_type: MediaTypeEnum | None
     ) -> ImportPreviewResponse:
-        raise ValueError("Este provedor não aceita username.")
+        raise DomainError("Este provedor não aceita username.")
 
     async def parse_url(
         self, url: str, media_type: MediaTypeEnum | None, db, user_id: int
     ) -> ImportPreviewResponse:
-        raise ValueError("Este provedor não aceita URL.")
+        raise DomainError("Este provedor não aceita URL.")
 
     async def parse_connection(
         self, db, user_id: int, media_type: MediaTypeEnum | None
     ) -> ImportPreviewResponse:
-        raise ValueError("Este provedor não aceita importação por conexão.")
+        raise DomainError("Este provedor não aceita importação por conexão.")

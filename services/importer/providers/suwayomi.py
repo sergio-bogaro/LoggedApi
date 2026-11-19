@@ -21,6 +21,7 @@ from services.importer.providers.base import ImportProvider
 from services.importer.text import normalize_title, search_title
 from services.suwayomi.categories import ACTION_BACKLOG, ACTION_STATUS, resolve_action
 from services.suwayomi.client import SuwayomiClient, normalize_base_url
+from domain_errors import DomainError
 
 
 def _from_unix(value: object) -> datetime | None:
@@ -71,12 +72,12 @@ class SuwayomiProvider(ImportProvider):
             .all()
         }
         if not mappings:
-            raise ValueError(
+            raise DomainError(
                 "Nenhuma categoria do Suwayomi foi configurada. "
                 "Abra Configurações → Integrações e defina o que cada categoria vira no Logged."
             )
         if not any(row.action != "ignore" for row in mappings.values()):
-            raise ValueError(
+            raise DomainError(
                 "Todas as categorias do Suwayomi estão como 'Ignorar'. "
                 "Configure ao menos uma categoria para importar."
             )
@@ -183,7 +184,7 @@ class SuwayomiProvider(ImportProvider):
             )
 
         if not entries:
-            raise ValueError(
+            raise DomainError(
                 "Nenhum mangá novo encontrado nas categorias mapeadas. "
                 "Talvez a biblioteca do Suwayomi já esteja toda no Logged."
             )

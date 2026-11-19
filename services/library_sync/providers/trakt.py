@@ -23,6 +23,7 @@ from services.library_sync.providers.common import (
     to_float,
     year_of,
 )
+from domain_errors import DomainError
 
 _API = "https://api.trakt.tv"
 _AUTH = "https://api.trakt.tv"
@@ -56,7 +57,7 @@ class TraktProvider(LibraryProvider):
         client_id = (settings.trakt_client_id or "").strip()
         client_secret = (settings.trakt_client_secret or "").strip()
         if not client_id:
-            raise ValueError(
+            raise DomainError(
                 "Configure TRAKT_CLIENT_ID e TRAKT_CLIENT_SECRET no servidor para "
                 "conectar o Trakt."
             )
@@ -120,7 +121,7 @@ class TraktProvider(LibraryProvider):
         refresh_token = str(auth.get("refresh_token") or "")
         if not refresh_token:
             connection.needs_reauth = True
-            raise ValueError("Conexão com o Trakt expirada. Reconecte a conta.")
+            raise DomainError("Conexão com o Trakt expirada. Reconecte a conta.")
         client_id, client_secret = self._credentials()
         payload = {
             "refresh_token": refresh_token,
@@ -144,7 +145,7 @@ class TraktProvider(LibraryProvider):
                 )
         if response.status_code >= 400:
             connection.needs_reauth = True
-            raise ValueError("Não foi possível renovar a conexão com o Trakt.")
+            raise DomainError("Não foi possível renovar a conexão com o Trakt.")
         tokens = response.json()
         auth.update(tokens)
         auth["expires_at"] = (
@@ -158,7 +159,7 @@ class TraktProvider(LibraryProvider):
         token = str(auth.get("access_token") or "")
         if not token:
             connection.needs_reauth = True
-            raise ValueError("Conecte sua conta do Trakt em Configurações > Integrações.")
+            raise DomainError("Conecte sua conta do Trakt em Configurações > Integrações.")
         expires_at = to_datetime(auth.get("expires_at"))
         if expires_at is not None:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -194,10 +195,10 @@ class TraktProvider(LibraryProvider):
                     continue
                 if response.status_code == 401:
                     connection.needs_reauth = True
-                    raise ValueError("Conexão com o Trakt expirada. Reconecte a conta.")
+                    raise DomainError("Conexão com o Trakt expirada. Reconecte a conta.")
                 response.raise_for_status()
                 return response.json()
-        raise ValueError("O Trakt limitou as requisições. Tente novamente mais tarde.")
+        raise DomainError("O Trakt limitou as requisições. Tente novamente mais tarde.")
 
     async def _paged(self, connection: LibraryConnection, path: str) -> list[dict]:
         results: list[dict] = []
@@ -222,7 +223,7 @@ class TraktProvider(LibraryProvider):
             )
         if response.status_code == 401:
             connection.needs_reauth = True
-            raise ValueError("Conexão com o Trakt expirada. Reconecte a conta.")
+            raise DomainError("Conexão com o Trakt expirada. Reconecte a conta.")
         response.raise_for_status()
         data = response.json()
         return str(data.get("username") or data.get("name") or "Trakt")

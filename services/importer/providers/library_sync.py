@@ -18,6 +18,7 @@ from services.importer.providers.base import ImportProvider
 from services.library_sync.engine import _action_for_status
 from services.library_sync.providers.base import LibraryProvider, SourceSnapshot
 from services.library_sync.registry import get_provider as get_sync_provider
+from domain_errors import DomainError
 
 
 class LibrarySyncImportProvider(ImportProvider):
@@ -40,7 +41,7 @@ class LibrarySyncImportProvider(ImportProvider):
             )
         ).scalar_one_or_none()
         if connection is None:
-            raise ValueError(
+            raise DomainError(
                 f"Configure a conexão com {self.label} em Configurações > Integrações."
             )
         auth = LibraryProvider.auth(connection)
@@ -49,7 +50,7 @@ class LibrarySyncImportProvider(ImportProvider):
             or str(auth.get("token") or "").strip()
             or str(auth.get("access_token") or "").strip()
         ):
-            raise ValueError(
+            raise DomainError(
                 f"Conecte sua conta do {self.label} antes de importar a biblioteca."
             )
 
@@ -111,7 +112,7 @@ class LibrarySyncImportProvider(ImportProvider):
             )
 
         if not entries:
-            raise ValueError(
+            raise DomainError(
                 f"Nenhum item encontrado na biblioteca do {self.label}."
             )
 

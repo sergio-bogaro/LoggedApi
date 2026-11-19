@@ -7,8 +7,9 @@ histórico completo continua vindo do export CSV.
 
 from xml.etree import ElementTree as ET
 
-from defusedxml.ElementTree import fromstring as safe_fromstring
+import re
 
+from defusedxml.ElementTree import fromstring as safe_fromstring
 from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.library_sync import LibraryConnection
 from services.library_sync.providers.base import (
@@ -25,6 +26,7 @@ from services.library_sync.providers.common import (
     to_float,
     year_of,
 )
+from domain_errors import DomainError
 
 _NS = {
     "letterboxd": "https://letterboxd.com",
@@ -35,6 +37,9 @@ _BROWSER_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124 Safari/537.36"
 )
+# O <description> de um item "watched" sem review é só essa frase. Ela não é
+# review e não deve poluir `Media.review` nem os logs.
+_WATCHED_ONLY_RE = re.compile(r"^Watched on [^\n]+?\.\s*")
 class LetterboxdProvider(LibraryProvider):
     id = "letterboxd"
     label = "Letterboxd"
@@ -57,9 +62,9 @@ class LetterboxdProvider(LibraryProvider):
                 headers={"User-Agent": _BROWSER_UA},
             )
         if response.status_code == 404:
-            raise ValueError("Username do Letterboxd não encontrado.")
+            raise DomainError("Username do Letterboxd não encontrado.")
         if response.status_code in (403, 429, 503):
-            raise ValueError(
+            raise DomainError(
                 "O Letterboxd bloqueou a leitura do RSS (Cloudflare). "
                 "Tente novamente mais tarde."
             )
@@ -69,7 +74,7 @@ class LetterboxdProvider(LibraryProvider):
     async def test(self, connection: LibraryConnection) -> str:
         username = str(self.auth(connection).get("username") or "").strip()
         if not username:
-            raise ValueError("Informe o username do Letterboxd.")
+            raise DomainError("Informe o username do Letterboxd.")
         await self._feed(username)
         return username
 
@@ -78,12 +83,12 @@ class LetterboxdProvider(LibraryProvider):
     ) -> SourceSnapshot:
         username = str(self.auth(connection).get("username") or "").strip()
         if not username:
-            raise ValueError("Informe o username do Letterboxd.")
+            raise DomainError("Informe o username do Letterboxd.")
         raw = await self._feed(username)
         try:
             root = safe_fromstring(raw)
         except ET.ParseError as exc:
-            raise ValueError("O feed do Letterboxd não pôde ser lido.") from exc
+            raise DomainError("O feed do Letterboxd não pôde ser lido.") from exc
 
         items: dict[str, SourceItem] = {}
 
@@ -127,7 +132,9 @@ class LetterboxdProvider(LibraryProvider):
         watched = to_date(_ns_text(element, "letterboxd", "watchedDate"))
         release_year = year_of(_ns_text(element, "letterboxd", "filmYear"))
         published = to_datetime(_text(element, "pubDate"))
-        review = strip_html(_text(element, "description"))
+        review_text = strip_html(_text(element, "description")) or ""
+        # Remove a frase "Watched on ..." que o feed usa em itens sem review.
+        review = _WATCHED_ONLY_RE.sub("", review_text, count=1).strip() or None
         return SourceItem(
             source_id=source_id,
             media_type=MediaTypeEnum.MOVIES,

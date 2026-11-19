@@ -123,6 +123,12 @@ O projeto lê `.env` (via `pydantic-settings`). Variáveis úteis:
 - `LIBRARY_SYNC_SCHEDULER_ENABLED` (padrão `true`) — agendador do sync global
 - `LIBRARY_SYNC_REQUEST_TIMEOUT` (padrão `20`) — timeout, em segundos, das chamadas aos provedores
 - `CORS_ORIGINS` (JSON string)
+- `BACKUP_DIR` (padrão `./backups`; em Docker `/data/backups`)
+- `BACKUP_ON_STARTUP` (padrão `true`) — backup antes das migrações no entrypoint
+- `BACKUP_INCLUDE_UPLOADS` (padrão `true`) — incluir as imagens no pacote de backup
+- `BACKUP_KEEP_DAILY` / `BACKUP_KEEP_WEEKLY` / `BACKUP_KEEP_MONTHLY` (padrão `7`/`4`/`3`)
+- `MAX_UPLOAD_MB` (padrão `10`) — limite de upload de imagens; se aumentar, ajuste também `client_max_body_size` em `LoggedApp/nginx.conf`
+- `LOG_LEVEL` (padrão `INFO`) — nível do logging da API, workers e scripts
 
 Exemplo de `.env` mínimo:
 
@@ -132,8 +138,17 @@ UPLOAD_DIR=./uploads
 CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
 ```
 
-## Observações finais
-- Você já confirmou que a instalação funcionou com `Python 3.12.12` — ótimo; agora basta ativar o venv e rodar `uvicorn`.
+## Paginação e erros da API
+
+- `GET /api/media/` e `GET /api/media-logs/` retornam no máximo 500 itens por
+  página (`limit`, padrão 200) e aceitam `offset`. O frontend busca a biblioteca
+  completa em blocos de 500 quando precisa de todos os itens.
+- Erros esperados de regra de negócio levantam `DomainError`
+  (`domain_errors.py`) e viram `400 {"detail": "..."}`. Qualquer outra exceção
+  vira 500 e fica no log com traceback — um bug de programação não é mais
+  disfarçado de erro do usuário.
+
+## Observações finais- Você já confirmou que a instalação funcionou com `Python 3.12.12` — ótimo; agora basta ativar o venv e rodar `uvicorn`.
 - Se quiser, posso (a) iniciar o servidor aqui na sessão, (b) criar um script `make` ou `scripts/run.sh` para facilitar, ou (c) commitar o `README.md`. Diga qual prefere.
 
 ## Importação e sincronização de bibliotecas
@@ -265,3 +280,133 @@ a mídia, os logs, o backlog e o vínculo de sync são criados juntos.
 Depois de conectar uma integração, a UI sugere a **sincronização inicial**. Ela
 não cria títulos direto: apenas popula a fila de revisão. O Suwayomi segue a
 mesma regra e usa as categorias como status/backlog.
+
+## Migrações de banco (Alembic)
+
+O schema **não é mais alterado no startup**. Quem aplica mudanças é o Alembic:
+
+```bash
+# aplicar migrations pendentes
+alembic upgrade head
+
+# ver a versão atual
+alembic current
+
+# conferir se o metadata dos models diverge do banco
+alembic check
+```
+
+Em bancos já existentes, a baseline é marcada sem executar DDL:
+
+```bash
+alembic stamp 0001_baseline
+alembic upgrade head
+```
+
+Nunca rode `alembic upgrade head` num banco antigo sem `stamp` antes — o
+Alembic tentaria criar tabelas que já existem. O entrypoint do container detecta
+esse caso (`scripts/check_schema_state.py`) e orienta o comando correto.
+
+## Backup e restauração
+
+O script faz um snapshot consistente do SQLite (`VACUUM INTO`, seguro com WAL e
+com a API rodando), verifica a integridade, compacta e aplica a retenção GFS:
+
+```bash
+python scripts/backup.py               # backup + poda
+python scripts/backup.py --dry-run     # mostra o que faria
+python scripts/backup.py --keep-monthly 12
+```
+
+Retenção (`BACKUP_KEEP_*`) é por **janelas de período**, não cota de arquivos:
+
+- `DAILY=7`: todos os backups dos últimos 7 dias;
+- `WEEKLY=4`: o mais recente de cada uma das últimas 4 semanas ISO;
+- `MONTHLY=3`: o mais recente de cada um dos últimos 3 meses.
+
+O conjunto final é a união dos três. Com `7/4/3` e backups diários, ficam ~11–12
+arquivos (~2–3 MB cada). Arquivos fora do padrão `logged-AAAA-MM-DD.db.gz` nunca
+são apagados.
+
+### Restauração
+
+```bash
+docker compose stop api
+mv logged.db logged.db.bak-$(date +%F)      # guarde o atual (+ -wal/-shm)
+gunzip -c backups/logged-AAAA-MM-DD.db.gz > logged.db
+# se houver uploads no backup:
+tar -xzf backups/uploads-AAAA-MM-DD.tar.gz -C /caminho/do/data
+docker compose start api                    # aplica migrations pendentes
+```
+
+Se o backup for **anterior à adoção do Alembic** (não tem tabela
+`alembic_version`), o entrypoint para com uma mensagem clara. Nesse caso, marque
+a baseline uma única vez:
+
+```bash
+docker compose run --rm api alembic stamp 0001_baseline
+docker compose start api
+```
+
+### Agendamento diário (recomendado)
+
+O backup roda no startup do container. Para uma rotina diária, use um timer no
+host (funciona mesmo com o container parado):
+
+```ini
+# /etc/systemd/system/logged-backup.service
+[Unit]
+Description=Backup do Logged
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec logged-api python scripts/backup.py
+```
+
+```ini
+# /etc/systemd/system/logged-backup.timer
+[Unit]
+Description=Backup diário do Logged
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl enable --now logged-backup.timer
+```
+
+Guarde pelo menos uma cópia fora do disco do projeto (rsync para outro
+disco/NAS). Backup no mesmo disco não protege contra falha de hardware.
+
+## Docker
+
+O `docker-compose.yml` na raiz do repositório sobe API + web (Nginx com proxy
+para a API). Os dados ficam no volume `logged-data` e os backups em
+`./backups` (bind separado).
+
+```bash
+cp .env.example .env       # ajuste as variáveis (caminhos são os do container)
+docker compose up -d --build
+docker compose logs -f api
+```
+
+O container da API executa, nesta ordem: **backup → `alembic upgrade head` →
+uvicorn** (`scripts/entrypoint.sh`). Se o backup falhar, o startup para antes de
+migrar.
+
+## Desenvolvimento local (sem Docker)
+
+```bash
+cd LoggedApi
+source .venv/bin/activate.fish
+alembic upgrade head
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Os testes criam o schema direto do metadata em um banco temporário:
+
+```bash
+python -m unittest discover -s tests -v
+```

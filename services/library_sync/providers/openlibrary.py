@@ -18,6 +18,7 @@ from services.library_sync.providers.common import (
     client,
     year_of,
 )
+from domain_errors import DomainError
 
 _API = "https://openlibrary.org"
 _PAGE = 100
@@ -47,14 +48,14 @@ class OpenLibraryProvider(LibraryProvider):
     async def test(self, connection: LibraryConnection) -> str:
         username = str(self.auth(connection).get("username") or "").strip()
         if not username:
-            raise ValueError("Informe o username do Open Library.")
+            raise DomainError("Informe o username do Open Library.")
         async with client() as http:
             response = await http.get(
                 f"{_API}/people/{username}/books/want-to-read.json",
                 params={"limit": 1},
             )
         if response.status_code == 404:
-            raise ValueError("Reading log público do Open Library não encontrado.")
+            raise DomainError("Reading log público do Open Library não encontrado.")
         response.raise_for_status()
         return username
 
@@ -63,7 +64,7 @@ class OpenLibraryProvider(LibraryProvider):
     ) -> SourceSnapshot:
         username = str(self.auth(connection).get("username") or "").strip()
         if not username:
-            raise ValueError("Informe o username do Open Library.")
+            raise DomainError("Informe o username do Open Library.")
 
         items: dict[str, SourceItem] = {}
         priorities: dict[str, int] = {}
@@ -83,7 +84,7 @@ class OpenLibraryProvider(LibraryProvider):
                     if response.status_code == 404:
                         # Perfil privado ou sem essa estante.
                         if shelf == "want-to-read":
-                            raise ValueError(
+                            raise DomainError(
                                 "Reading log público do Open Library não encontrado. "
                                 "Verifique o username e a visibilidade do perfil."
                             )

@@ -35,6 +35,7 @@ from services.suwayomi.categories import (
 )
 from services.suwayomi.client import SuwayomiClient, normalize_base_url
 from services.suwayomi.sync import service as sync_service, utcnow
+from domain_errors import DomainError
 
 router = APIRouter(prefix="/api/suwayomi", tags=["Suwayomi"])
 
@@ -121,7 +122,7 @@ def _save_mapping(
     category_order: int = 0,
 ) -> SuwayomiCategoryMapping:
     if not is_valid_action(action):
-        raise ValueError(f"Ação inválida para a categoria '{category_name}': {action}.")
+        raise DomainError(f"Ação inválida para a categoria '{category_name}': {action}.")
 
     row = db.execute(
         select(SuwayomiCategoryMapping).where(
@@ -306,7 +307,7 @@ def update_link(
         if media is None or media.user_id != user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada.")
         if media.type != MediaTypeEnum.MANGA:
-            raise ValueError("O Suwayomi só pode ser vinculado a mangás.")
+            raise DomainError("O Suwayomi só pode ser vinculado a mangás.")
         link.media_id = media.id
         link.ignored = False
         link.match_error = None
@@ -319,7 +320,7 @@ def update_link(
 
     if "ignored" in fields and data.ignored is not None:
         if data.ignored and link.media_id is not None:
-            raise ValueError("Desvincule a mídia antes de ignorar este título.")
+            raise DomainError("Desvincule a mídia antes de ignorar este título.")
         link.ignored = data.ignored
         link.match_error = None
         link.last_match_attempt_at = None
@@ -382,7 +383,7 @@ async def save_config(data: SuwayomiConfigPayload, db: Session = Depends(get_db)
         username = (data.username or "").strip()
         password = data.password or ""
         if bool(username) != bool(password):
-            raise ValueError(
+            raise DomainError(
                 "Preencha usuário e senha do Suwayomi, ou deixe os dois vazios."
             )
         if username and password:

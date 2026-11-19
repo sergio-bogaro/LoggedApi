@@ -23,6 +23,7 @@ from services.library_sync.providers.common import (
     to_float,
     year_of,
 )
+from domain_errors import DomainError
 
 _API = "https://api.myanimelist.net/v2"
 _FIELDS = "list_status,alternative_titles,main_picture,synopsis,start_date,media_type"
@@ -55,9 +56,9 @@ class MalProvider(LibraryProvider):
     async def test(self, connection: LibraryConnection) -> str:
         username = str(self.auth(connection).get("username") or "").strip()
         if not username:
-            raise ValueError("Informe o username do MyAnimeList.")
+            raise DomainError("Informe o username do MyAnimeList.")
         if not self._client_id(connection):
-            raise ValueError(
+            raise DomainError(
                 "Configure o Client ID do MyAnimeList (MAL_CLIENT_ID) para ler listas públicas."
             )
         async with client() as http:
@@ -67,9 +68,9 @@ class MalProvider(LibraryProvider):
                 headers={"X-MAL-CLIENT-ID": self._client_id(connection)},
             )
         if response.status_code == 404:
-            raise ValueError("Username do MyAnimeList não encontrado.")
+            raise DomainError("Username do MyAnimeList não encontrado.")
         if response.status_code in (401, 403):
-            raise ValueError("Client ID do MyAnimeList inválido ou sem permissão.")
+            raise DomainError("Client ID do MyAnimeList inválido ou sem permissão.")
         response.raise_for_status()
         return username
 
@@ -79,9 +80,9 @@ class MalProvider(LibraryProvider):
         username = str(self.auth(connection).get("username") or "").strip()
         client_id = self._client_id(connection)
         if not username:
-            raise ValueError("Informe o username do MyAnimeList.")
+            raise DomainError("Informe o username do MyAnimeList.")
         if not client_id:
-            raise ValueError(
+            raise DomainError(
                 "Configure o Client ID do MyAnimeList (MAL_CLIENT_ID) para ler listas públicas."
             )
 
@@ -103,9 +104,9 @@ class MalProvider(LibraryProvider):
                         headers={"X-MAL-CLIENT-ID": client_id},
                     )
                     if response.status_code == 404:
-                        raise ValueError("Username do MyAnimeList não encontrado.")
+                        raise DomainError("Username do MyAnimeList não encontrado.")
                     if response.status_code in (401, 403):
-                        raise ValueError(
+                        raise DomainError(
                             "Client ID do MyAnimeList inválido ou sem permissão."
                         )
                     response.raise_for_status()

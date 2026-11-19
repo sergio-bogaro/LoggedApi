@@ -16,6 +16,7 @@ from schemas.import_schemas import (
 )
 from services.anilist_service import service as anilist_service
 from services.importer.providers.base import ImportProvider
+from domain_errors import DomainError
 
 _STATUS_MAP: dict[str, MediaStatusEnum | None] = {
     "CURRENT": MediaStatusEnum.IN_PROGRESS,
@@ -71,7 +72,7 @@ class AniListProvider(ImportProvider):
         self, username: str, media_type: MediaTypeEnum | None
     ) -> ImportPreviewResponse:
         if not username or not username.strip():
-            raise ValueError("Informe o username do AniList.")
+            raise DomainError("Informe o username do AniList.")
 
         resolved_type = media_type if media_type in self.media_types else MediaTypeEnum.ANIME
         anilist_type = "ANIME" if resolved_type == MediaTypeEnum.ANIME else "MANGA"

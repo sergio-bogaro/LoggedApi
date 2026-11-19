@@ -1,5 +1,6 @@
 .git/
 .venv/
+.venvclear/
 venv/
 __pycache__/
 *.py[cod]
@@ -8,6 +9,7 @@ __pycache__/
 *.db-shm
 *.sqlite3
 .env
+backups/
 uploads/*
 !uploads/.gitkeep
 .pytest_cache/

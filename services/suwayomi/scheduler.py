@@ -6,6 +6,7 @@ vencidas; o intervalo real é calculado por ``updates_per_day`` e persistido em
 """
 
 import asyncio
+import logging
 from datetime import datetime
 
 from sqlalchemy import or_, select
@@ -14,6 +15,8 @@ from database import SessionLocal
 from models.suwayomi import SuwayomiAccount
 from services.suwayomi.sync import utcnow
 from services.suwayomi.sync import service as sync_service
+
+logger = logging.getLogger(__name__)
 
 _TICK_SECONDS = 60
 
@@ -41,8 +44,8 @@ class SuwayomiScheduler:
         while not self._stop.is_set():
             try:
                 await self._tick()
-            except Exception as exc:  # noqa: BLE001 — o loop não pode morrer
-                print(f"Suwayomi scheduler: {exc}")
+            except Exception:  # noqa: BLE001 — o loop não pode morrer
+                logger.exception("Suwayomi scheduler")
 
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=_TICK_SECONDS)
@@ -73,8 +76,8 @@ class SuwayomiScheduler:
         for user_id in rows:
             try:
                 await asyncio.to_thread(sync_service.sync_user, user_id)
-            except Exception as exc:  # noqa: BLE001 — uma conta não derruba as outras
-                print(f"Suwayomi scheduler (user {user_id}): {exc}")
+            except Exception:  # noqa: BLE001 — uma conta não derruba as outras
+                logger.exception("Suwayomi scheduler (user %s)", user_id)
 
 
 scheduler = SuwayomiScheduler()
