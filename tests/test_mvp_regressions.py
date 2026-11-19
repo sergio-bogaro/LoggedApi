@@ -1652,7 +1652,9 @@ class SuwayomiTests(unittest.TestCase):
         self.assertIn("letterboxd", providers)
         self.assertIn("trakt", providers)
         self.assertTrue(providers["letterboxd"]["syncPartial"])
+        self.assertFalse(providers["letterboxd"]["statusMapping"])
         self.assertFalse(providers["anilist"]["syncPartial"])
+        self.assertTrue(providers["anilist"]["statusMapping"])
         self.assertFalse(providers["trakt"]["syncPartial"])
 
         response = self.client.put(
@@ -1697,6 +1699,48 @@ class SuwayomiTests(unittest.TestCase):
             f"/api/integrations/anilist?user_id={user_id}"
         )
         self.assertEqual(response.status_code, 204)
+
+    def test_letterboxd_partial_sync_hidden_after_manual_import(self) -> None:
+        from database import SessionLocal
+        from models.import_job import ImportJob
+
+        user_id = self._user()
+
+        def sync_partial() -> bool:
+            response = self.client.get(f"/api/integrations?user_id={user_id}")
+            self.assertEqual(response.status_code, 200, response.text)
+            providers = {item["id"]: item for item in response.json()}
+            return providers["letterboxd"]["syncPartial"]
+
+        self.assertTrue(sync_partial())
+
+        db = SessionLocal()
+        try:
+            job = ImportJob(
+                user_id=user_id,
+                provider="letterboxd",
+                input_type="file",
+                status="ready",
+            )
+            db.add(job)
+            db.commit()
+            job_id = job.id
+        finally:
+            db.close()
+
+        # Pronto para revisão ainda não é um import concluído.
+        self.assertTrue(sync_partial())
+
+        db = SessionLocal()
+        try:
+            job = db.get(ImportJob, job_id)
+            self.assertIsNotNone(job)
+            job.status = "done"
+            db.commit()
+        finally:
+            db.close()
+
+        self.assertFalse(sync_partial())
 
     def test_sync_records_read_and_library_dates(self) -> None:
         from datetime import datetime, timezone

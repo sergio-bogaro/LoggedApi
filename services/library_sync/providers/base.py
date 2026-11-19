@@ -69,6 +69,9 @@ class LibraryProvider:
     # Quando True, o sync não cobre todo o histórico da origem; a importação
     # completa precisa ser feita por arquivo.
     sync_partial: bool = False
+    # Quando False, o provedor não expõe mapeamento de status na UI (ex.:
+    # Letterboxd, cujo feed só tem "watched").
+    status_mapping: bool = True
     # Quando True, o sync cria um MediaLog com a data de consumo da origem.
     creates_logs: bool = False
 

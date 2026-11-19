@@ -42,6 +42,7 @@ class SyncProviderInfo(_CamelModel):
     has_token: bool = False
     pending_review: int = 0
     sync_partial: bool = False
+    status_mapping: bool = True
 
 
 class SyncConfigPayload(_CamelModel):

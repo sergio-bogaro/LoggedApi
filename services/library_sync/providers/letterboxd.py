@@ -48,6 +48,7 @@ class LetterboxdProvider(LibraryProvider):
     tracks_removals = False
     trusted_external_id = True
     sync_partial = True
+    status_mapping = False
     creates_logs = True
 
     def statuses(self) -> list[SourceStatus]:

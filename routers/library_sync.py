@@ -8,6 +8,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from database import get_db
+from models.import_job import ImportJob
 from models.library_sync import (
     LibraryConnection,
     LibraryStatusMapping,
@@ -111,6 +112,7 @@ def _info(
     provider: LibraryProvider,
     connection: LibraryConnection | None,
     pending_review: int = 0,
+    has_completed_import: bool = False,
 ) -> SyncProviderInfo:
     auth = LibraryProvider.auth(connection) if connection else {}
     return SyncProviderInfo(
@@ -137,7 +139,8 @@ def _info(
             or str(auth.get("access_token") or "").strip()
         ),
         pending_review=pending_review,
-        sync_partial=provider.sync_partial,
+        sync_partial=provider.sync_partial and not has_completed_import,
+        status_mapping=provider.status_mapping,
     )
 
 
@@ -242,11 +245,22 @@ def list_integrations(user_id: int, db: Session = Depends(get_db)):
             .group_by(LibrarySyncSuggestion.provider)
         ).all()
     )
+    completed_imports = set(
+        db.execute(
+            select(ImportJob.provider)
+            .where(
+                ImportJob.user_id == user_id,
+                ImportJob.status == "done",
+            )
+            .distinct()
+        ).scalars()
+    )
     return [
         _info(
             provider,
             _get_connection(db, user_id, provider.id),
             counts.get(provider.id, 0),
+            has_completed_import=provider.id in completed_imports,
         )
         for provider in list_providers()
     ]
