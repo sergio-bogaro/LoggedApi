@@ -37,6 +37,8 @@ from services.suwayomi.client import SuwayomiClient
 from domain_errors import DomainError
 
 _PENDING_RETRY_INTERVAL = timedelta(hours=24)
+# Commits periódicos para não segurar o writer do SQLite durante o sync inteiro.
+_COMMIT_EVERY = 25
 ProgressCallback = Callable[[dict], None]
 
 
@@ -324,7 +326,9 @@ class SuwayomiSyncService:
             self._running.add(user_id)
 
         try:
-            db = SessionLocal()
+            # Não expira os objetos a cada commit: o loop mantém mapas de
+            # links/mídias/sugestões carregados e serializa poucas consultas.
+            db = SessionLocal(expire_on_commit=False)
             try:
                 account = db.execute(
                     select(SuwayomiAccount).where(SuwayomiAccount.user_id == user_id)
@@ -356,9 +360,14 @@ class SuwayomiSyncService:
             total=0,
         )
 
-        client = SuwayomiClient(
-            account.base_url, username=account.username, password=account.password
-        )
+        # Captura as credenciais e encerra a transação aberta pelo SELECT da
+        # conta antes de qualquer chamada de rede.
+        base_url = account.base_url
+        username = account.username
+        password = account.password
+        db.commit()
+
+        client = SuwayomiClient(base_url, username=username, password=password)
         try:
             categories = await client.get_categories()
             library = await client.get_library()
@@ -452,9 +461,15 @@ class SuwayomiSyncService:
             existing_by_title.setdefault(normalize_title(media.title), media)
         media_by_id = {media.id: media for media in existing_media}
 
+        # Persiste os ajustes de nome/ordem das categorias e fecha a leitura
+        # inicial antes de começar o loop.
+        db.commit()
+
         seen: set[int] = set()
 
         for index, manga in enumerate(library, start=1):
+            if index > 1 and (index - 1) % _COMMIT_EVERY == 0:
+                db.commit()
             _report(
                 progress,
                 phase="syncing",
@@ -517,8 +532,14 @@ class SuwayomiSyncService:
                 media = existing_by_title.get(normalize_title(title))
                 if media is None:
                     try:
-                        result = await matcher.resolve_manga(db, user_id, title, search_title(title))
+                        # O matcher faz chamadas ao AniList: nenhum write
+                        # pendente pode ficar aberto durante a rede.
+                        db.commit()
+                        result = await matcher.resolve_manga(
+                            db, user_id, title, search_title(title)
+                        )
                     except Exception as exc:  # noqa: BLE001 — tenta de novo no próximo sync
+                        db.rollback()
                         if len(summary["errors"]) < 50:
                             summary["errors"].append(f"{title}: {exc}")
                         continue
@@ -674,6 +695,9 @@ class SuwayomiSyncService:
                 total=len(library),
             )
 
+        # Fecha o último lote antes de montar o resumo final.
+        db.commit()
+
         if any(mapping.action != ACTION_IGNORE for mapping in mappings.values()):
             for link in links.values():
                 if link.suwayomi_manga_id not in seen:
@@ -755,18 +779,25 @@ class SuwayomiSyncService:
                 )
                 return False
 
-            link.last_match_attempt_at = now
-            link.match_attempts = (link.match_attempts or 0) + 1
-
+            attempt_at = utcnow()
             try:
+                # O caller pode ter gravado last_seen_at/title; persiste antes
+                # da chamada de rede e deixa a transação limpa.
+                db.commit()
                 result = await matcher.resolve_manga(
                     db, user_id, title, search_title(title)
                 )
             except Exception as exc:  # noqa: BLE001 — tenta de novo no próximo sync
+                db.rollback()
+                link.last_match_attempt_at = attempt_at
+                link.match_attempts = (link.match_attempts or 0) + 1
                 link.match_error = str(exc)
                 if len(summary["errors"]) < 50:
                     summary["errors"].append(f"{title}: {exc}")
                 return False
+
+            link.last_match_attempt_at = attempt_at
+            link.match_attempts = (link.match_attempts or 0) + 1
 
             if result.status == "already_in_library" and result.existing_media_id:
                 media = _get_media(db, result.existing_media_id)

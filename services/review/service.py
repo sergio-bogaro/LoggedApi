@@ -35,11 +35,11 @@ from services.import_jobs.service import (
     service as import_job_service,
 )
 from services.library_sync.suggestions import (
+    _apply_suggestion_candidate,
+    _apply_suggestion_state,
     approve_suggestions,
     candidate_for_suggestion,
     candidates_from_json as sync_candidates_from_json,
-    set_suggestion_candidate,
-    set_suggestion_state,
     suggestion_logs,
 )
 from domain_errors import DomainError
@@ -562,15 +562,22 @@ class ReviewService:
             raise DomainError("Item de revisão não encontrado.")
         if suggestion.review_state == "approved":
             raise DomainError("Este título já foi adicionado à biblioteca.")
-        if selected is not None:
-            set_suggestion_candidate(db, user_id, suggestion.id, selected)
-        if ignored is not None:
-            set_suggestion_state(
-                db,
-                user_id,
-                suggestion.id,
-                "dismissed" if ignored else "pending",
-            )
+
+        try:
+            if selected is not None:
+                _apply_suggestion_candidate(db, user_id, suggestion, selected)
+            if ignored is not None:
+                _apply_suggestion_state(
+                    db,
+                    user_id,
+                    suggestion,
+                    "dismissed" if ignored else "pending",
+                )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
         db.expire_all()
         suggestion = db.get(LibrarySyncSuggestion, item_id)
         return _sync_item(suggestion)
@@ -588,32 +595,34 @@ class ReviewService:
             source, item_id = parse_key(key)
             (manual_ids if source == "manual" else sync_ids).append(item_id)
 
-        jobs: dict[int, ImportJob] = {}
-        for item_id in manual_ids:
-            item = db.get(ImportJobItem, item_id)
-            if item is None:
-                raise DomainError("Item de revisão não encontrado.")
-            job = db.get(ImportJob, item.job_id)
-            if job is None or job.user_id != user_id:
-                raise DomainError("Item de revisão não encontrado.")
-            if job.status != "ready":
-                raise DomainError("Esta importação não está pronta para revisão.")
-            item.ignored = state == "dismissed"
-            _persist_suwayomi_ignore(db, user_id, item, item.ignored)
-            jobs[job.id] = job
+        try:
+            jobs: dict[int, ImportJob] = {}
+            for item_id in manual_ids:
+                item = db.get(ImportJobItem, item_id)
+                if item is None:
+                    raise DomainError("Item de revisão não encontrado.")
+                job = db.get(ImportJob, item.job_id)
+                if job is None or job.user_id != user_id:
+                    raise DomainError("Item de revisão não encontrado.")
+                if job.status != "ready":
+                    raise DomainError("Esta importação não está pronta para revisão.")
+                item.ignored = state == "dismissed"
+                _persist_suwayomi_ignore(db, user_id, item, item.ignored)
+                jobs[job.id] = job
 
-        for suggestion_id in sync_ids:
-            suggestion = db.get(LibrarySyncSuggestion, suggestion_id)
-            if suggestion is None or suggestion.user_id != user_id:
-                raise DomainError("Item de revisão não encontrado.")
-            if suggestion.review_state == "approved":
-                raise DomainError("Este título já foi adicionado à biblioteca.")
-            set_suggestion_state(db, user_id, suggestion_id, state)
+            for suggestion_id in sync_ids:
+                suggestion = db.get(LibrarySyncSuggestion, suggestion_id)
+                if suggestion is None or suggestion.user_id != user_id:
+                    raise DomainError("Item de revisão não encontrado.")
+                _apply_suggestion_state(db, user_id, suggestion, state)
 
-        db.flush()
-        for job in jobs.values():
-            set_counts(db, job)
-        db.commit()
+            db.flush()
+            for job in jobs.values():
+                set_counts(db, job)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
 
     def commit(
         self,

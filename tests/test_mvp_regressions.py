@@ -700,6 +700,70 @@ class SuwayomiTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_network_calls_run_outside_write_transaction(self) -> None:
+        import asyncio
+        from datetime import datetime
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum
+        from models.suwayomi import SuwayomiAccount, SuwayomiCategoryMapping
+        from schemas.import_schemas import ImportMatchResult
+        from services.suwayomi import sync as sync_module
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            account = SuwayomiAccount(
+                user_id=user_id,
+                base_url="http://suwayomi.test",
+                enabled=True,
+            )
+            db.add(account)
+            db.add(
+                SuwayomiCategoryMapping(
+                    user_id=user_id,
+                    category_id=1,
+                    category_name="Reading",
+                    category_order=1,
+                    action="status",
+                    status=MediaStatusEnum.IN_PROGRESS,
+                )
+            )
+            db.commit()
+
+            transaction_states: list[bool] = []
+
+            async def fake_resolve(_db, _user_id, _title, _query=None):
+                transaction_states.append(_db.in_transaction())
+                return ImportMatchResult(key="suwayomi", status="not_found")
+
+            summary = sync_module.service._empty_summary(datetime.now())
+            with patch.object(
+                sync_module.matcher,
+                "resolve_manga",
+                new=fake_resolve,
+            ):
+                asyncio.run(
+                    sync_module.service._run(
+                        db,
+                        account,
+                        [{"id": 1, "name": "Reading", "order": 1}],
+                        [
+                            {
+                                "id": 900,
+                                "title": "Outside Transaction",
+                                "categories": {"nodes": [{"id": 1}]},
+                            }
+                        ],
+                        summary,
+                    )
+                )
+        finally:
+            db.close()
+
+        self.assertTrue(transaction_states)
+        self.assertEqual(transaction_states, [False])
+
     def test_sync_applies_category_transitions(self) -> None:
         from datetime import datetime
 
@@ -4650,6 +4714,60 @@ class LibrarySyncTests(unittest.TestCase):
             response.json()["selected"]["externalId"],
             movie_candidate.external_id,
         )
+
+    def test_review_state_batch_is_atomic(self) -> None:
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.library_sync import LibrarySyncSuggestion
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            pending = LibrarySyncSuggestion(
+                user_id=user_id,
+                provider="anilist",
+                source_id=f"atomic-pending-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.ANIME,
+                title="Atomic Pending",
+                source_status="CURRENT",
+                action="in_progress",
+                target_status=MediaStatusEnum.IN_PROGRESS,
+                review_state="pending",
+            )
+            approved = LibrarySyncSuggestion(
+                user_id=user_id,
+                provider="anilist",
+                source_id=f"atomic-approved-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.ANIME,
+                title="Atomic Approved",
+                source_status="COMPLETED",
+                action="finished",
+                target_status=MediaStatusEnum.FINISHED,
+                review_state="approved",
+            )
+            db.add_all([pending, approved])
+            db.commit()
+            pending_id = pending.id
+            approved_id = approved.id
+        finally:
+            db.close()
+
+        response = self.client.post(
+            "/api/review/state",
+            json={
+                "userId": user_id,
+                "keys": [f"sync:{pending_id}", f"sync:{approved_id}"],
+                "state": "dismissed",
+            },
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+
+        db = SessionLocal()
+        try:
+            pending = db.get(LibrarySyncSuggestion, pending_id)
+            self.assertEqual(pending.review_state, "pending")
+        finally:
+            db.close()
 
     def test_review_api_commit_mixed_sources(self) -> None:
         import json

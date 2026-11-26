@@ -464,13 +464,16 @@ def approve_suggestions(
     }
 
 
-def set_suggestion_state(
-    db: Session, user_id: int, suggestion_id: int, state: str
+def _apply_suggestion_state(
+    db: Session,
+    user_id: int,
+    suggestion: LibrarySyncSuggestion,
+    state: str,
 ) -> LibrarySyncSuggestion:
+    """Aplica o estado sem commit, para lotes atômicos."""
     if state not in ("pending", "dismissed"):
         raise DomainError("Estado inválido para a sugestão.")
-    suggestion = db.get(LibrarySyncSuggestion, suggestion_id)
-    if suggestion is None or suggestion.user_id != user_id:
+    if suggestion.user_id != user_id:
         raise DomainError("Sugestão não encontrada.")
     if suggestion.review_state == "approved":
         raise DomainError("Este título já foi adicionado à biblioteca.")
@@ -499,19 +502,30 @@ def set_suggestion_state(
             link.last_match_attempt_at = None
             link.match_attempts = 0
 
+    db.flush()
+    return suggestion
+
+
+def set_suggestion_state(
+    db: Session, user_id: int, suggestion_id: int, state: str
+) -> LibrarySyncSuggestion:
+    suggestion = db.get(LibrarySyncSuggestion, suggestion_id)
+    if suggestion is None or suggestion.user_id != user_id:
+        raise DomainError("Sugestão não encontrada.")
+    _apply_suggestion_state(db, user_id, suggestion, state)
     db.commit()
     db.refresh(suggestion)
     return suggestion
 
 
-def set_suggestion_candidate(
+def _apply_suggestion_candidate(
     db: Session,
     user_id: int,
-    suggestion_id: int,
+    suggestion: LibrarySyncSuggestion,
     candidate: ImportCandidate,
 ) -> LibrarySyncSuggestion:
-    suggestion = db.get(LibrarySyncSuggestion, suggestion_id)
-    if suggestion is None or suggestion.user_id != user_id:
+    """Aplica o candidato sem commit, para lotes atômicos."""
+    if suggestion.user_id != user_id:
         raise DomainError("Sugestão não encontrada.")
     if suggestion.review_state == "approved":
         raise DomainError("Este título já foi adicionado à biblioteca.")
@@ -529,6 +543,20 @@ def set_suggestion_candidate(
     suggestion.candidates_json = candidates_to_json(existing)
     suggestion.error = None
     suggestion.decided_at = None
+    db.flush()
+    return suggestion
+
+
+def set_suggestion_candidate(
+    db: Session,
+    user_id: int,
+    suggestion_id: int,
+    candidate: ImportCandidate,
+) -> LibrarySyncSuggestion:
+    suggestion = db.get(LibrarySyncSuggestion, suggestion_id)
+    if suggestion is None or suggestion.user_id != user_id:
+        raise DomainError("Sugestão não encontrada.")
+    _apply_suggestion_candidate(db, user_id, suggestion, candidate)
     db.commit()
     db.refresh(suggestion)
     return suggestion
