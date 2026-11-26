@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -67,6 +67,14 @@ from services.library_sync.suggestions import (
 router = APIRouter(prefix="/api/integrations", tags=["Integrações"])
 
 _DEVICE_FLOWS: dict[tuple[int, str], dict] = {}
+
+
+def _prune_device_flows(now: datetime) -> None:
+    """Remove fluxos de device flow vencidos que nunca foram pollados."""
+    for key, flow in list(_DEVICE_FLOWS.items()):
+        expires_at = flow.get("expires_at")
+        if isinstance(expires_at, datetime) and expires_at <= now:
+            _DEVICE_FLOWS.pop(key, None)
 
 
 def _decode_summary(value: str | None) -> dict | None:
@@ -599,10 +607,13 @@ async def oauth_start(
     device_code = result.pop("device_code", None)
     if not device_code:
         raise HTTPException(status_code=502, detail="O provedor não retornou device code.")
+    now = utcnow()
+    _prune_device_flows(now)
+    expires_in = max(int(result.get("expires_in") or 600), 1)
     _DEVICE_FLOWS[(data.user_id, provider_id)] = {
         "device_code": device_code,
-        "expires_at": utcnow(),
         **result,
+        "expires_at": now + timedelta(seconds=expires_in),
     }
     return OAuthStartResponse(**result)
 
@@ -614,15 +625,21 @@ async def oauth_poll(
     db: Session = Depends(get_db),
 ):
     provider = get_provider(provider_id)
+    now = utcnow()
+    _prune_device_flows(now)
     flow = _DEVICE_FLOWS.get((data.user_id, provider_id))
     if flow is None:
+        return OAuthPollResponse(status="expired")
+    expires_at = flow.get("expires_at")
+    if isinstance(expires_at, datetime) and expires_at <= now:
+        _DEVICE_FLOWS.pop((data.user_id, provider_id), None)
         return OAuthPollResponse(status="expired")
     if not hasattr(provider, "poll_device"):
         raise HTTPException(status_code=400, detail="Provedor não usa OAuth device.")
     result = await provider.poll_device(flow["device_code"])  # type: ignore[attr-defined]
     status = result.get("status")
     if status != "connected":
-        if status == "expired":
+        if status in ("expired", "denied"):
             _DEVICE_FLOWS.pop((data.user_id, provider_id), None)
         return OAuthPollResponse(status=status or "error", error=result.get("error"))
 

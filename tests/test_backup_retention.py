@@ -18,6 +18,21 @@ def _daily_until(today: date, days: int) -> list[date]:
     return [today - timedelta(days=offset) for offset in range(days)]
 
 
+class BackupLockTests(unittest.TestCase):
+    def test_blocks_concurrent_runs_and_releases(self) -> None:
+        from scripts.backup import BackupError, _backup_lock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            with _backup_lock(directory):
+                with self.assertRaises(BackupError):
+                    with _backup_lock(directory):
+                        pass
+            # Depois do release, o lock pode ser adquirido novamente.
+            with _backup_lock(directory):
+                pass
+
+
 class ParseBackupDateTests(unittest.TestCase):
     def test_parses_database_and_uploads_names(self) -> None:
         self.assertEqual(

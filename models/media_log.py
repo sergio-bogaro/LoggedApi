@@ -21,8 +21,18 @@ class MediaLog(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    media_id: Mapped[int] = mapped_column(Integer, ForeignKey("media.id"), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    media_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("media.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     date: Mapped[datetime.date] = mapped_column(Date, nullable=False, default=datetime.date.today)
 
     status: Mapped[MediaStatusEnum | None] = mapped_column(Enum(MediaStatusEnum), nullable=True)

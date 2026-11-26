@@ -16,10 +16,13 @@ from __future__ import annotations
 import argparse
 import gzip
 import logging
+import os
 import shutil
 import sqlite3
 import sys
 import tarfile
+import time
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
@@ -40,9 +43,42 @@ from scripts.backup_retention import (
 
 log = logging.getLogger("logged.backup")
 
+_LOCK_NAME = ".backup.lock"
+# Um lock órfão (processo morto) não pode bloquear backups para sempre.
+_LOCK_STALE_SECONDS = 6 * 60 * 60
+
 
 class BackupError(RuntimeError):
     """Falha que deve impedir o startup (ou retornar exit code 1)."""
+
+
+@contextmanager
+def _backup_lock(directory: Path):
+    """Serializa execuções concorrentes de backup."""
+    lock_path = directory / _LOCK_NAME
+    acquired = False
+    fd: int | None = None
+    try:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                age = 0
+            if age < _LOCK_STALE_SECONDS:
+                raise BackupError("Já existe um backup em andamento.")
+            lock_path.unlink(missing_ok=True)
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+
+        acquired = True
+        os.write(fd, f"pid={os.getpid()} started={time.time():.0f}".encode())
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if acquired:
+            lock_path.unlink(missing_ok=True)
 
 
 def database_path() -> Path:
@@ -211,9 +247,10 @@ def run(
     origin = "startup" if on_startup else "manual"
     log.info("Backup iniciado (%s) em %s", origin, directory)
 
-    database_file = create_database_backup(directory, today, dry_run)
-    uploads_file = create_uploads_backup(directory, today, dry_run)
-    removed = prune(directory, today, dry_run=dry_run)
+    with _backup_lock(directory):
+        database_file = create_database_backup(directory, today, dry_run)
+        uploads_file = create_uploads_backup(directory, today, dry_run)
+        removed = prune(directory, today, dry_run=dry_run)
 
     log.info(
         "Backup concluído: banco=%s uploads=%s removidos=%d",

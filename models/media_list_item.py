@@ -27,9 +27,19 @@ class MediaListItem(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     media_type: Mapped[MediaTypeEnum] = mapped_column(String(20), nullable=False, index=True)
-    media_id: Mapped[int] = mapped_column(Integer, ForeignKey("media.id"), nullable=False, index=True)
+    media_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("media.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     list_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     date_log: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

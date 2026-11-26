@@ -527,6 +527,62 @@ class ReviewService:
             limit=page,
         )
 
+    def list_keys(
+        self,
+        db: Session,
+        user_id: int,
+        state: ReviewStateFilter = "pending",
+        match: ReviewMatchFilter = "all",
+        source: ReviewSourceFilter = "all",
+        provider: str | None = None,
+        media_type: MediaTypeEnum | None = None,
+        search: str | None = None,
+    ) -> list[str]:
+        """Chaves de todos os itens selecionáveis que batem com os filtros."""
+        include_manual = source in ("manual", "all")
+        include_sync = source in ("sync", "all")
+        keys: list[str] = []
+
+        if include_manual:
+            conditions = _manual_base(user_id, provider, media_type, search)
+            if state != "all":
+                conditions += _manual_state_conditions(state)
+            if match != "all":
+                conditions += _manual_match_conditions(match)
+            # Espelha o checkbox da UI: só itens com candidato/seleção.
+            conditions.append(
+                or_(
+                    ImportJobItem.selected_json.is_not(None),
+                    ImportJobItem.match_json.is_not(None),
+                )
+            )
+            rows = (
+                db.execute(
+                    select(ImportJobItem.id)
+                    .join(ImportJob, ImportJob.id == ImportJobItem.job_id)
+                    .where(*conditions)
+                )
+                .scalars()
+                .all()
+            )
+            keys.extend(manual_key(item_id) for item_id in rows)
+
+        if include_sync:
+            conditions = _sync_base(user_id, provider, media_type, search)
+            if state != "all":
+                conditions += _sync_state_conditions(state)
+            if match != "all":
+                conditions += _sync_match_conditions(match)
+            conditions.append(LibrarySyncSuggestion.candidate_json.is_not(None))
+            rows = (
+                db.execute(select(LibrarySyncSuggestion.id).where(*conditions))
+                .scalars()
+                .all()
+            )
+            keys.extend(sync_key(suggestion_id) for suggestion_id in rows)
+
+        return keys
+
     def patch_item(
         self,
         db: Session,

@@ -50,6 +50,30 @@ def list_review_items(
     )
 
 
+@router.get("/keys", response_model=list[str])
+def review_keys(
+    user_id: int,
+    state: ReviewStateFilter = "pending",
+    match: ReviewMatchFilter = "all",
+    source: ReviewSourceFilter = "all",
+    provider: str | None = None,
+    media_type: MediaTypeEnum | None = None,
+    search: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Retorna as chaves de todos os itens selecionáveis para o lote."""
+    return review_service.list_keys(
+        db,
+        user_id,
+        state=state,
+        match=match,
+        source=source,
+        provider=provider,
+        media_type=media_type,
+        search=search,
+    )
+
+
 @router.get("/counts", response_model=ReviewCounts)
 def review_counts(
     user_id: int,

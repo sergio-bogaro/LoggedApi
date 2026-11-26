@@ -203,6 +203,73 @@ class ApiRegressionTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_database_cascades_media_logs_and_list_items(self) -> None:
+        from sqlalchemy import delete, func, select
+
+        from database import SessionLocal
+        from models.media import Media
+        from models.media_list_item import MediaListItem
+        from models.media_log import MediaLog
+
+        user_id = self._user()
+        external_id = f"cascade-{uuid.uuid4().hex}"
+        media = self.client.post(
+            "/api/media/",
+            json={
+                "userId": user_id,
+                "title": "Cascade Movie",
+                "type": "movies",
+                "externalId": external_id,
+            },
+        )
+        self.assertEqual(media.status_code, 201, media.text)
+        media_id = media.json()["id"]
+
+        log = self.client.post(
+            "/api/media-logs/",
+            json={
+                "userId": user_id,
+                "mediaId": media_id,
+                "status": "finished",
+                "date": "2026-10-01",
+            },
+        )
+        self.assertEqual(log.status_code, 201, log.text)
+
+        favorite = self.client.post(
+            "/api/favorites/",
+            json={
+                "userId": user_id,
+                "mediaType": "movies",
+                "externalId": external_id,
+                "title": "Cascade Movie",
+            },
+        )
+        self.assertEqual(favorite.status_code, 201, favorite.text)
+
+        db = SessionLocal()
+        try:
+            db.execute(delete(Media).where(Media.id == media_id))
+            db.commit()
+            self.assertEqual(
+                db.execute(
+                    select(func.count())
+                    .select_from(MediaLog)
+                    .where(MediaLog.media_id == media_id)
+                ).scalar(),
+                0,
+            )
+            self.assertEqual(
+                db.execute(
+                    select(func.count())
+                    .select_from(MediaListItem)
+                    .where(MediaListItem.media_id == media_id)
+                ).scalar(),
+                0,
+            )
+        finally:
+            db.close()
+
     def test_cross_user_log_is_rejected(self) -> None:
         owner_id = self._user()
         other_id = self._user()
@@ -3858,6 +3925,72 @@ class LibrarySyncTests(unittest.TestCase):
         self.assertEqual(response.json()["updatesPerDay"], 8)
         self.assertEqual(response.json()["startTime"], "09:30")
 
+    def test_oauth_device_flow_expires_and_is_pruned(self) -> None:
+        from datetime import timedelta
+
+        from routers import library_sync as library_sync_router
+        from services.library_sync.engine import utcnow
+
+        class FakeProvider:
+            async def start_device(self):
+                return {
+                    "device_code": "device-123",
+                    "user_code": "ABCD",
+                    "verification_url": "https://example.test/device",
+                    "expires_in": 60,
+                    "interval": 5,
+                }
+
+            async def poll_device(self, _device_code):
+                return {"status": "pending"}
+
+        user_id = self._user()
+        provider_key = (user_id, "trakt")
+        try:
+            with patch.object(
+                library_sync_router,
+                "get_provider",
+                return_value=FakeProvider(),
+            ):
+                response = self.client.post(
+                    "/api/integrations/trakt/oauth/start",
+                    json={"userId": user_id},
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+            flow = library_sync_router._DEVICE_FLOWS[provider_key]
+            self.assertGreater(flow["expires_at"], utcnow())
+
+            # Fluxo vencido é removido antes de qualquer poll.
+            flow["expires_at"] = utcnow() - timedelta(seconds=1)
+            response = self.client.post(
+                "/api/integrations/trakt/oauth/poll",
+                json={"userId": user_id},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["status"], "expired")
+            self.assertNotIn(provider_key, library_sync_router._DEVICE_FLOWS)
+
+            # Um fluxo vencido de outro provedor também é podado no start.
+            stale_key = (user_id, "simkl")
+            library_sync_router._DEVICE_FLOWS[stale_key] = {
+                "device_code": "stale",
+                "expires_at": utcnow() - timedelta(seconds=1),
+            }
+            with patch.object(
+                library_sync_router,
+                "get_provider",
+                return_value=FakeProvider(),
+            ):
+                response = self.client.post(
+                    "/api/integrations/trakt/oauth/start",
+                    json={"userId": user_id},
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertNotIn(stale_key, library_sync_router._DEVICE_FLOWS)
+        finally:
+            library_sync_router._DEVICE_FLOWS.pop(provider_key, None)
+            library_sync_router._DEVICE_FLOWS.pop((user_id, "simkl"), None)
+
     def test_global_sync_schedule_is_anchored_to_start_time(self) -> None:
         from datetime import datetime
 
@@ -4674,6 +4807,19 @@ class LibrarySyncTests(unittest.TestCase):
             sync_id = sync.id
         finally:
             db.close()
+
+        keys = self.client.get(
+            f"/api/review/keys?user_id={user_id}&state=pending&source=all"
+        )
+        self.assertEqual(keys.status_code, 200, keys.text)
+        self.assertIn(f"manual:{manual_id}", keys.json())
+        self.assertIn(f"sync:{sync_id}", keys.json())
+
+        keys = self.client.get(
+            f"/api/review/keys?user_id={user_id}&state=pending&source=sync"
+        )
+        self.assertEqual(keys.status_code, 200, keys.text)
+        self.assertEqual(keys.json(), [f"sync:{sync_id}"])
 
         response = self.client.patch(
             f"/api/review/items/manual:{manual_id}",
