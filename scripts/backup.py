@@ -22,6 +22,7 @@ import sys
 import tarfile
 from datetime import date
 from pathlib import Path
+from uuid import uuid4
 
 # Permite `python scripts/backup.py` (sys.path[0] vira a pasta scripts/).
 if __package__ in (None, ""):
@@ -86,10 +87,15 @@ def _integrity_ok(path: Path) -> tuple[bool, str]:
 
 
 def _gzip_file(source: Path, destination: Path) -> None:
-    temporary = destination.with_suffix(destination.suffix + ".tmp")
-    with source.open("rb") as raw, gzip.open(temporary, "wb", compresslevel=9) as gz:
-        shutil.copyfileobj(raw, gz)
-    temporary.replace(destination)
+    temporary = destination.with_suffix(destination.suffix + f".{uuid4().hex}.tmp")
+    try:
+        with source.open("rb") as raw, gzip.open(
+            temporary, "wb", compresslevel=9
+        ) as gz:
+            shutil.copyfileobj(raw, gz)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def create_database_backup(directory: Path, today: date, dry_run: bool) -> Path | None:
@@ -103,8 +109,11 @@ def create_database_backup(directory: Path, today: date, dry_run: bool) -> Path 
         log.info("[dry-run] criaria %s a partir de %s", destination, source)
         return destination
 
-    temporary_snapshot = directory / f".logged-{today.isoformat()}.db.tmp"
-    temporary_snapshot.unlink(missing_ok=True)
+    # Nome único por execução: dois backups simultâneos não compartilham
+    # temporários nem apagam o arquivo um do outro.
+    temporary_snapshot = (
+        directory / f".logged-{today.isoformat()}-{uuid4().hex}.db.tmp"
+    )
     try:
         _sqlite_snapshot(source, temporary_snapshot)
         ok, message = _integrity_ok(temporary_snapshot)
@@ -145,11 +154,16 @@ def create_uploads_backup(directory: Path, today: date, dry_run: bool) -> Path |
         log.info("[dry-run] criaria %s com %d arquivo(s)", destination, len(files))
         return destination
 
-    temporary = destination.with_suffix(destination.suffix + ".tmp")
-    with tarfile.open(temporary, "w:gz") as tar:
-        for path in files:
-            tar.add(path, arcname=f"uploads/{path.name}")
-    temporary.replace(destination)
+    temporary = destination.with_suffix(
+        destination.suffix + f".{uuid4().hex}.tmp"
+    )
+    try:
+        with tarfile.open(temporary, "w:gz") as tar:
+            for path in files:
+                tar.add(path, arcname=f"uploads/{path.name}")
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
     size_mb = destination.stat().st_size / (1024 * 1024)
     log.info("Uploads copiados para %s (%.1f MB)", destination, size_mb)

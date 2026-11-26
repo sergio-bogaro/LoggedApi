@@ -7,9 +7,13 @@ em vez de verificar a cada minuto.
 
 import asyncio
 import logging
+from datetime import timedelta
+
+from sqlalchemy import select
 
 from config import settings
 from database import SessionLocal
+from models.library_sync import LibrarySyncSettings
 from services.library_sync.orchestrator import (
     due_user_ids,
     next_due_at,
@@ -19,6 +23,9 @@ from services.sync_runs import sync_runs
 
 # Reavalia o relógio/banco no máximo uma vez por hora, mesmo sem mudanças.
 _MAX_SLEEP_SECONDS = 3600
+# Se uma execução falhar, evita repetir em loop apertado.
+_RETRY_DELAY = timedelta(minutes=15)
+_STOP_TIMEOUT_SECONDS = 5
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +51,17 @@ class LibrarySyncScheduler:
         if self._wake is not None:
             self._wake.set()
         if self._task is not None:
-            await asyncio.gather(self._task, return_exceptions=True)
+            try:
+                # Um sync em andamento não pode travar o shutdown da API.
+                await asyncio.wait_for(self._task, timeout=_STOP_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning("Encerrando scheduler de sync com execução em andamento.")
+                self._task.cancel()
+                await asyncio.gather(self._task, return_exceptions=True)
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 - shutdown não pode falhar
+                logger.exception("Erro ao encerrar o scheduler de sync.")
             self._task = None
 
     def wake(self) -> None:
@@ -99,9 +116,32 @@ class LibrarySyncScheduler:
         for user_id in user_ids:
             try:
                 run, _started = sync_runs.start(user_id, "all")
-                await asyncio.to_thread(sync_runs.wait, run["id"])
+                result = await asyncio.to_thread(sync_runs.wait, run["id"])
+                if result is None or result.get("status") == "failed":
+                    self._postpone_after_failure(user_id)
             except Exception:  # noqa: BLE001 — um usuário não derruba os outros
                 logger.exception("Library sync scheduler (user %s)", user_id)
+                self._postpone_after_failure(user_id)
+
+    @staticmethod
+    def _postpone_after_failure(user_id: int) -> None:
+        """Avança o próximo slot para não repetir uma falha em loop apertado."""
+        db = SessionLocal()
+        try:
+            row = db.execute(
+                select(LibrarySyncSettings).where(
+                    LibrarySyncSettings.user_id == user_id
+                )
+            ).scalar_one_or_none()
+            if row is None or not row.enabled:
+                return
+            row.next_sync_at = utcnow() + _RETRY_DELAY
+            db.commit()
+        except Exception:  # noqa: BLE001 — o scheduler não pode morrer por isso
+            db.rollback()
+            logger.exception("Falha ao reagendar sync do usuário %s", user_id)
+        finally:
+            db.close()
 
 
 scheduler = LibrarySyncScheduler()

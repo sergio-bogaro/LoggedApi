@@ -20,11 +20,23 @@ def save_import_file(filename: str | None, raw: bytes) -> tuple[str, str]:
     return str(path), safe_name
 
 
+def delete_import_path(file_path: str | None) -> bool:
+    """Remove um arquivo temporário, mas só dentro da pasta de imports."""
+    if not file_path:
+        return True
+    try:
+        candidate = Path(file_path).resolve()
+        base = imports_dir().resolve()
+        if candidate.parent != base:
+            return False
+        candidate.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def delete_job_file(job: ImportJob) -> None:
     if not job.file_path:
         return
-    try:
-        Path(job.file_path).unlink(missing_ok=True)
-    except OSError:
-        pass
-    job.file_path = None
+    if delete_import_path(job.file_path):
+        job.file_path = None

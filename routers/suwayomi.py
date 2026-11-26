@@ -1,5 +1,4 @@
 import json
-from datetime import timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -65,17 +64,10 @@ def _config_response(account: SuwayomiAccount | None) -> SuwayomiConfigResponse:
         username=account.username,
         has_password=bool(account.password),
         enabled=account.enabled,
-        updates_per_day=account.updates_per_day,
         last_sync_at=account.last_sync_at,
         last_sync_status=account.last_sync_status,
         last_sync_summary=_decode_summary(account),
-        next_sync_at=account.next_sync_at,
     )
-
-
-def _interval(updates_per_day: int) -> timedelta:
-    per_day = min(max(int(updates_per_day or 1), 1), 24)
-    return timedelta(hours=24 / per_day)
 
 
 def _account_client(account: SuwayomiAccount) -> SuwayomiClient:
@@ -302,21 +294,33 @@ def update_link(
         raise HTTPException(status_code=404, detail="Vínculo do Suwayomi não encontrado.")
 
     fields = data.model_fields_set
-    if "media_id" in fields and data.media_id is not None:
-        media = db.get(Media, data.media_id)
-        if media is None or media.user_id != user_id:
-            raise HTTPException(status_code=404, detail="Mídia não encontrada.")
-        if media.type != MediaTypeEnum.MANGA:
-            raise DomainError("O Suwayomi só pode ser vinculado a mangás.")
-        link.media_id = media.id
-        link.ignored = False
-        link.match_error = None
-        link.last_match_attempt_at = None
-        link.match_attempts = 0
-        # Força a próxima sincronização a aplicar a categoria atual.
-        link.last_action = None
-        link.last_status = None
-        _sync_suggestion_state(db, link, "approved", media.id)
+    if "media_id" in fields:
+        if data.media_id is None:
+            # Desvincula sem apagar o link: o sync volta a tratar o título como
+            # pendente e o usuário pode vinculá-lo de novo depois.
+            link.media_id = None
+            link.ignored = False
+            link.match_error = None
+            link.last_match_attempt_at = None
+            link.match_attempts = 0
+            link.last_action = None
+            link.last_status = None
+            _sync_suggestion_state(db, link, "pending")
+        else:
+            media = db.get(Media, data.media_id)
+            if media is None or media.user_id != user_id:
+                raise HTTPException(status_code=404, detail="Mídia não encontrada.")
+            if media.type != MediaTypeEnum.MANGA:
+                raise DomainError("O Suwayomi só pode ser vinculado a mangás.")
+            link.media_id = media.id
+            link.ignored = False
+            link.match_error = None
+            link.last_match_attempt_at = None
+            link.match_attempts = 0
+            # Força a próxima sincronização a aplicar a categoria atual.
+            link.last_action = None
+            link.last_status = None
+            _sync_suggestion_state(db, link, "approved", media.id)
 
     if "ignored" in fields and data.ignored is not None:
         if data.ignored and link.media_id is not None:
@@ -352,7 +356,6 @@ async def save_config(data: SuwayomiConfigPayload, db: Session = Depends(get_db)
             user_id=data.user_id,
             base_url=base_url,
             enabled=data.enabled,
-            updates_per_day=data.updates_per_day,
         )
         db.add(account)
     else:
@@ -374,7 +377,6 @@ async def save_config(data: SuwayomiConfigPayload, db: Session = Depends(get_db)
             )
         account.base_url = base_url
         account.enabled = data.enabled
-        account.updates_per_day = data.updates_per_day
 
     if data.clear_auth:
         account.username = None
@@ -390,8 +392,6 @@ async def save_config(data: SuwayomiConfigPayload, db: Session = Depends(get_db)
             account.username = username
             account.password = password
 
-    now = utcnow()
-    account.next_sync_at = now + _interval(account.updates_per_day) if account.enabled else None
     db.commit()
     db.refresh(account)
 

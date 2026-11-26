@@ -188,6 +188,8 @@ class ImportJobWorker:
         db.refresh(job)
         if job.cancel_requested:
             db.rollback()
+            db.refresh(job)
+            self._mark_cancelled(db, job)
             return
 
         for entry in preview.entries:
@@ -215,6 +217,8 @@ class ImportJobWorker:
         db.refresh(job)
         if job.cancel_requested:
             db.rollback()
+            db.refresh(job)
+            self._mark_cancelled(db, job)
             return
 
         job.progress_total = len(preview.entries)

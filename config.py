@@ -44,6 +44,10 @@ class Settings(BaseSettings):
 
     # Upload de imagens (MB).
     max_upload_mb: int = Field(10, ge=1, le=200)
+    # Por padrão, upload por URL não pode acessar loopback/rede privada.
+    # Em instalações locais que usam capas de um servidor na LAN, defina
+    # ALLOW_PRIVATE_IMAGE_URLS=true conscientemente.
+    allow_private_image_urls: bool = False
 
     # Logging (INFO, DEBUG, WARNING...).
     log_level: str = "INFO"

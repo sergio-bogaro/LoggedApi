@@ -74,3 +74,7 @@ class ImportJobPatch(_CamelModel):
 
 class ImportJobCommitRequest(_CamelModel):
     add_to_backlog: bool = True
+    # Quando informado, confirma apenas estes itens e mantém o job em revisão
+    # enquanto sobrar item pendente. Sem a lista, mantém o comportamento antigo
+    # de confirmar todos os itens não ignorados (usado pelo ImportManager).
+    item_ids: list[int] | None = None

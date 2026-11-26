@@ -127,8 +127,9 @@ O projeto lê `.env` (via `pydantic-settings`). Variáveis úteis:
 - `BACKUP_ON_STARTUP` (padrão `true`) — backup antes das migrações no entrypoint
 - `BACKUP_INCLUDE_UPLOADS` (padrão `true`) — incluir as imagens no pacote de backup
 - `BACKUP_KEEP_DAILY` / `BACKUP_KEEP_WEEKLY` / `BACKUP_KEEP_MONTHLY` (padrão `7`/`4`/`3`)
-- `MAX_UPLOAD_MB` (padrão `10`) — limite de upload de imagens; se aumentar, ajuste também `client_max_body_size` em `LoggedApp/nginx.conf`
-- `LOG_LEVEL` (padrão `INFO`) — nível do logging da API, workers e scripts
+- `MAX_UPLOAD_MB` (padrão `10`) - limite de upload de imagens; se aumentar, ajuste também `client_max_body_size` em `LoggedApp/nginx.conf`
+- `ALLOW_PRIVATE_IMAGE_URLS` (padrão `false`) - permite baixar capas de loopback/rede privada; ative apenas para servidores de capa na LAN
+- `LOG_LEVEL` (padrão `INFO`) - nível do logging da API, workers e scripts
 
 Exemplo de `.env` mínimo:
 
@@ -234,7 +235,9 @@ Em **Configurações → Integrações**:
 - use **Sincronizar tudo** para executar os provedores incluídos em sequência.
 
 **Sincronizar agora** em um provedor funciona mesmo sem ele participar do sync
-geral. O Suwayomi participa quando a conta está configurada e habilitada.
+geral. O Suwayomi participa quando a conta está configurada e habilitada e
+segue o mesmo horário/frequência do sync global; não existe agenda própria por
+conta.
 
 Cada execução roda em background e abre um diálogo com progresso por provedor e
 por item. **Continuar em segundo plano** fecha o diálogo sem cancelar; clicar de

@@ -395,10 +395,6 @@ class SuwayomiSyncService:
         account.last_sync_at = finished
         account.last_sync_status = status
         account.last_sync_summary = json.dumps(summary, ensure_ascii=False)
-        if account.enabled:
-            account.next_sync_at = finished + self._interval(account.updates_per_day)
-        else:
-            account.next_sync_at = None
         db.add(account)
         db.commit()
 
@@ -826,11 +822,6 @@ class SuwayomiSyncService:
         if len(summary["pendingResolved"]) < 50:
             summary["pendingResolved"].append(title)
         return True
-
-    @staticmethod
-    def _interval(updates_per_day: int) -> timedelta:
-        per_day = min(max(int(updates_per_day or 1), 1), 24)
-        return timedelta(hours=24 / per_day)
 
     @staticmethod
     def _empty_summary(started: datetime) -> dict:

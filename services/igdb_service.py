@@ -44,28 +44,37 @@ class IgdbService:
                 "igdb", timeout=settings.igdb_request_timeout
             )
             try:
+                # Credenciais no corpo, nunca na URL: erros de HTTP podem
+                # carregar a URL e vazar o client_secret em logs/respostas.
                 resp = await client.post(
                     settings.igdb_oauth_url,
-                    params={
+                    data={
                         "client_id": client_id,
                         "client_secret": client_secret,
                         "grant_type": "client_credentials",
                     },
                 )
-            except httpx.HTTPError as exc:
-                raise DomainError(f"Falha ao contatar o Twitch/IGDB: {exc}") from exc
+            except httpx.HTTPError:
+                raise DomainError("Falha ao contatar o Twitch/IGDB.")
             if resp.status_code in (400, 401, 403):
                 raise DomainError(
                     "O IGDB/Twitch rejeitou as credenciais. Verifique o Client ID e o Secret."
                 )
-            resp.raise_for_status()
-            data = resp.json()
+            if resp.status_code >= 400:
+                raise DomainError(
+                    f"O IGDB/Twitch retornou um erro ({resp.status_code})."
+                )
+            try:
+                data = resp.json()
+                access_token = str(data["access_token"])
+                expires_in = int(data["expires_in"])
+            except (TypeError, ValueError, KeyError):
+                raise DomainError("O IGDB/Twitch retornou uma resposta inválida.")
 
-            access_token: str = data["access_token"]
             # Refresh 60 seconds before expiry
             self._tokens[client_id] = (
                 access_token,
-                now + timedelta(seconds=data["expires_in"] - 60),
+                now + timedelta(seconds=expires_in - 60),
             )
             return access_token
 
@@ -87,14 +96,17 @@ class IgdbService:
                     "Content-Type": "text/plain",
                 },
             )
-        except httpx.HTTPError as exc:
-            raise DomainError(f"Falha ao contatar o IGDB: {exc}") from exc
+        except httpx.HTTPError:
+            raise DomainError("Falha ao contatar o IGDB.")
 
         if resp.status_code >= 400:
             raise DomainError(f"O IGDB retornou um erro ({resp.status_code}).")
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            raise DomainError("O IGDB retornou uma resposta inválida.")
         if not isinstance(data, list):
-            raise DomainError(f"IGDB returned unexpected response: {data}")
+            raise DomainError("O IGDB retornou uma resposta inesperada.")
         return data
 
     @staticmethod
@@ -115,9 +127,12 @@ class IgdbService:
         self, query: str, client_id: str, client_secret: str, limit: int = 20
     ) -> list[IgdbSearchItem]:
         """Search IGDB for games by title."""
+        # A busca do IGDB é uma string entre aspas; remova aspas e quebras para
+        # não injetar cláusulas APICalypse nem quebrar títulos legítimos.
+        safe_query = " ".join(query.replace('"', " ").split())[:200]
         # version_parent=null filters out editions/versions
         body = (
-            f'search "{query}"; '
+            f'search "{safe_query}"; '
             f"fields id,name,cover.image_id,first_release_date,summary; "
             f"where version_parent = null; "
             f"limit {limit};"

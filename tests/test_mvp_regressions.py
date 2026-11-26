@@ -148,6 +148,61 @@ class ApiRegressionTests(unittest.TestCase):
         self.assertEqual(len(with_logs.json()), 1)
         self.assertEqual(len(without_logs.json()), 0)
 
+    def test_delete_user_removes_media_and_import_files(self) -> None:
+        from config import settings
+        from database import SessionLocal
+        from models.import_job import ImportJob
+        from models.media import Media
+        from services.import_jobs.storage import imports_dir
+
+        user_id = self._user()
+        external_id = f"delete-user-{uuid.uuid4().hex}"
+        response = self.client.post(
+            "/api/media/",
+            json={
+                "userId": user_id,
+                "title": "Delete Me",
+                "type": "movies",
+                "externalId": external_id,
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        media_id = response.json()["id"]
+
+        image_name = f"delete-{uuid.uuid4().hex}.png"
+        image_path = settings.upload_path / image_name
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        import_file = imports_dir() / f"delete-{uuid.uuid4().hex}.bin"
+        import_file.write_bytes(b"temp")
+
+        db = SessionLocal()
+        try:
+            media = db.get(Media, media_id)
+            media.image_path = image_name
+            db.add(
+                ImportJob(
+                    user_id=user_id,
+                    provider="letterboxd",
+                    input_type="file",
+                    status="ready",
+                    file_path=str(import_file),
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        response = self.client.delete(f"/auth/users/{user_id}")
+        self.assertEqual(response.status_code, 204, response.text)
+        self.assertFalse(image_path.exists())
+        self.assertFalse(import_file.exists())
+
+        db = SessionLocal()
+        try:
+            self.assertIsNone(db.get(Media, media_id))
+        finally:
+            db.close()
+
     def test_cross_user_log_is_rejected(self) -> None:
         owner_id = self._user()
         other_id = self._user()
@@ -382,6 +437,124 @@ class HttpClientTests(unittest.TestCase):
         # "Event loop is closed" / "TCPTransport ... handler is closed".
         self.assertIsNot(first, other)
         self.assertIsNot(lock_a, other_lock)
+
+
+class ExternalServiceErrorTests(unittest.TestCase):
+    def test_igdb_oauth_error_does_not_expose_secret(self) -> None:
+        import httpx
+
+        from domain_errors import DomainError
+        from services.igdb_service import IgdbService
+
+        secret = "super-secret-value"
+        request = httpx.Request("POST", "https://id.twitch.tv/oauth2/token")
+        response = httpx.Response(429, request=request)
+
+        class FakeClient:
+            async def post(self, *args, **kwargs):
+                return response
+
+        service = IgdbService()
+        with patch(
+            "services.igdb_service.get_async_client",
+            return_value=FakeClient(),
+        ):
+            with self.assertRaises(DomainError) as ctx:
+                asyncio.run(service._ensure_token("client-id", secret))
+        self.assertNotIn(secret, str(ctx.exception))
+
+    def test_tmdb_error_does_not_expose_api_key(self) -> None:
+        import httpx
+
+        from domain_errors import DomainError
+        from services.tmdb_service import TmdbService
+
+        secret = "tmdb-secret-key"
+        request = httpx.Request(
+            "GET",
+            f"https://api.themoviedb.org/3/search/movie?api_key={secret}",
+        )
+        response = httpx.Response(500, request=request)
+
+        class FakeClient:
+            async def get(self, *args, **kwargs):
+                return response
+
+        service = TmdbService()
+        with patch(
+            "services.tmdb_service.get_async_client",
+            return_value=FakeClient(),
+        ):
+            with self.assertRaises(DomainError) as ctx:
+                asyncio.run(
+                    service.search_movies("movie", secret)
+                )
+        self.assertNotIn(secret, str(ctx.exception))
+
+    def test_igdb_search_escapes_quotes(self) -> None:
+        import httpx
+
+        from services.igdb_service import IgdbService
+
+        captured: dict[str, str] = {}
+        oauth_request = httpx.Request(
+            "POST", "https://id.twitch.tv/oauth2/token"
+        )
+        api_request = httpx.Request("POST", "https://api.igdb.com/v4/games")
+
+        class FakeClient:
+            async def post(self, url, **kwargs):
+                if "oauth2" in url:
+                    return httpx.Response(
+                        200,
+                        request=oauth_request,
+                        json={"access_token": "token", "expires_in": 3600},
+                    )
+                captured["body"] = kwargs["content"]
+                return httpx.Response(200, request=api_request, json=[])
+
+        service = IgdbService()
+        with patch(
+            "services.igdb_service.get_async_client",
+            return_value=FakeClient(),
+        ):
+            asyncio.run(service.search_games('foo"; limit 100;', "id", "secret"))
+
+        self.assertIn('search "foo ; limit 100;"', captured["body"])
+
+
+class ImageStorageSecurityTests(unittest.TestCase):
+    def test_rejects_private_and_invalid_image_urls(self) -> None:
+        from domain_errors import DomainError
+        from services.image_storage import _validate_remote_url
+
+        for url in (
+            "http://127.0.0.1/cover.png",
+            "http://[::1]/cover.png",
+            "http://169.254.169.254/latest/meta-data/",
+            "file:///etc/passwd",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(DomainError):
+                    asyncio.run(_validate_remote_url(url))
+
+    def test_detects_image_by_magic_bytes(self) -> None:
+        from domain_errors import DomainError
+        from services.image_storage import _detect_image_extension
+
+        self.assertEqual(
+            _detect_image_extension(b"\xff\xd8\xff\xe0" + b"0" * 8), ".jpg"
+        )
+        self.assertEqual(
+            _detect_image_extension(b"\x89PNG\r\n\x1a\n" + b"0" * 8), ".png"
+        )
+        self.assertEqual(_detect_image_extension(b"GIF89a" + b"0" * 8), ".gif")
+        self.assertEqual(
+            _detect_image_extension(b"RIFF" + b"0" * 4 + b"WEBP" + b"0" * 8),
+            ".webp",
+        )
+        with self.assertRaises(DomainError):
+            _detect_image_extension(b"<html>not an image</html>")
 
 
 class SuwayomiTests(unittest.TestCase):
@@ -2177,6 +2350,20 @@ class SuwayomiTests(unittest.TestCase):
         self.assertFalse(response.json()["ignored"])
 
         response = self.client.patch(
+            f"/api/suwayomi/links/{pending_id}?user_id={user_id}",
+            json={"mediaId": None},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["mediaId"])
+
+        response = self.client.get(
+            f"/api/suwayomi/links?user_id={user_id}&status=pending"
+        )
+        self.assertIn(
+            pending_id, [link["id"] for link in response.json()]
+        )
+
+        response = self.client.patch(
             f"/api/suwayomi/links/{ignored_id}?user_id={user_id}",
             json={"mediaId": movie_id},
         )
@@ -2380,6 +2567,38 @@ class ImportJobTests(unittest.TestCase):
 
         missing = self.client.get(f"/api/import/jobs/{job_id}?user_id={user_id}")
         self.assertEqual(missing.status_code, 404)
+
+    def test_cancel_matching_job_removes_temp_file(self) -> None:
+        from database import SessionLocal
+        from models.import_job import ImportJob
+        from services.import_jobs.storage import imports_dir
+
+        user_id = self._user()
+        path = imports_dir() / f"cancel-{uuid.uuid4().hex}.bin"
+        path.write_bytes(b"temp")
+
+        db = SessionLocal()
+        try:
+            job = ImportJob(
+                user_id=user_id,
+                provider="letterboxd",
+                input_type="file",
+                status="matching",
+                file_path=str(path),
+                progress_total=1,
+            )
+            db.add(job)
+            db.commit()
+            job_id = job.id
+        finally:
+            db.close()
+
+        response = self.client.post(
+            f"/api/import/jobs/{job_id}/cancel?user_id={user_id}"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "cancelled")
+        self.assertFalse(path.exists())
 
     def test_worker_matches_and_commit_uses_selected_items(self) -> None:
         from database import SessionLocal
@@ -4543,6 +4762,193 @@ class LibrarySyncTests(unittest.TestCase):
             sync = db.get(LibrarySyncSuggestion, sync_id)
             self.assertEqual(sync.review_state, "approved")
             self.assertIsNotNone(sync.media_id)
+        finally:
+            db.close()
+
+    def test_scheduler_postpones_failed_sync(self) -> None:
+        from datetime import datetime
+
+        from sqlalchemy import select
+
+        from database import SessionLocal
+        from models.library_sync import LibrarySyncSettings
+        from services.library_sync import scheduler as scheduler_module
+        from services.library_sync.orchestrator import utcnow
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            settings = LibrarySyncSettings(
+                user_id=user_id,
+                enabled=True,
+                updates_per_day=4,
+                start_time="00:00",
+                next_sync_at=datetime(2020, 1, 1),
+            )
+            db.add(settings)
+            db.commit()
+        finally:
+            db.close()
+
+        fake_run = {"id": "fake-run", "status": "running"}
+        with patch.object(
+            scheduler_module,
+            "due_user_ids",
+            return_value=[user_id],
+        ), patch.object(
+            scheduler_module.sync_runs,
+            "start",
+            return_value=(fake_run, True),
+        ), patch.object(
+            scheduler_module.sync_runs,
+            "wait",
+            return_value={"status": "failed"},
+        ):
+            asyncio.run(scheduler_module.scheduler._tick())
+
+        db = SessionLocal()
+        try:
+            settings = db.execute(
+                select(LibrarySyncSettings).where(
+                    LibrarySyncSettings.user_id == user_id
+                )
+            ).scalar_one()
+            self.assertGreater(settings.next_sync_at, utcnow())
+        finally:
+            db.close()
+
+    def test_review_commit_only_selected_manual_items(self) -> None:
+        import json
+
+        from database import SessionLocal
+        from models.enums import MediaStatusEnum, MediaTypeEnum
+        from models.import_job import ImportJob, ImportJobItem
+        from models.media import Media
+        from schemas.import_schemas import ImportCandidate
+        from services.import_jobs.serializers import candidate_to_json
+
+        user_id = self._user()
+        external_a = f"tmdb-partial-a-{uuid.uuid4().hex}"
+        external_b = f"tmdb-partial-b-{uuid.uuid4().hex}"
+
+        def candidate(external_id: str, title: str) -> ImportCandidate:
+            return ImportCandidate(
+                provider="tmdb",
+                external_id=external_id,
+                media_type=MediaTypeEnum.MOVIES,
+                title=title,
+                year=2024,
+                score=1.0,
+            )
+
+        candidate_a = candidate(external_a, "Partial A")
+        candidate_b = candidate(external_b, "Partial B")
+
+        db = SessionLocal()
+        try:
+            job = ImportJob(
+                user_id=user_id,
+                provider="letterboxd",
+                input_type="file",
+                status="ready",
+                progress_done=2,
+                progress_total=2,
+            )
+            db.add(job)
+            db.flush()
+            item_a = ImportJobItem(
+                job_id=job.id,
+                key=f"partial-a-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Partial A",
+                source="letterboxd",
+                status=MediaStatusEnum.FINISHED,
+                match_status="matched",
+                match_json=candidate_to_json(candidate_a),
+                candidates_json=json.dumps(
+                    [candidate_a.model_dump(mode="json")]
+                ),
+            )
+            item_b = ImportJobItem(
+                job_id=job.id,
+                key=f"partial-b-{uuid.uuid4().hex}",
+                media_type=MediaTypeEnum.MOVIES,
+                title="Partial B",
+                source="letterboxd",
+                status=MediaStatusEnum.FINISHED,
+                match_status="matched",
+                match_json=candidate_to_json(candidate_b),
+                candidates_json=json.dumps(
+                    [candidate_b.model_dump(mode="json")]
+                ),
+            )
+            db.add_all([item_a, item_b])
+            db.commit()
+            job_id = job.id
+            item_a_id = item_a.id
+            item_b_id = item_b.id
+        finally:
+            db.close()
+
+        response = self.client.post(
+            "/api/review/commit",
+            json={
+                "userId": user_id,
+                "keys": [f"manual:{item_a_id}"],
+                "addToBacklog": False,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["failed"], 0)
+        self.assertEqual(body["imported"], 1)
+
+        db = SessionLocal()
+        try:
+            self.assertEqual(
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id=external_a)
+                .count(),
+                1,
+            )
+            self.assertEqual(
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id=external_b)
+                .count(),
+                0,
+            )
+            job = db.get(ImportJob, job_id)
+            self.assertEqual(job.status, "ready")
+            item_a = db.get(ImportJobItem, item_a_id)
+            item_b = db.get(ImportJobItem, item_b_id)
+            self.assertEqual(item_a.commit_outcome, "imported")
+            self.assertIsNone(item_b.commit_outcome)
+        finally:
+            db.close()
+
+        response = self.client.post(
+            "/api/review/commit",
+            json={
+                "userId": user_id,
+                "keys": [f"manual:{item_b_id}"],
+                "addToBacklog": False,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["imported"], 1)
+
+        db = SessionLocal()
+        try:
+            self.assertEqual(
+                db.query(Media)
+                .filter_by(user_id=user_id, external_id=external_b)
+                .count(),
+                1,
+            )
+            job = db.get(ImportJob, job_id)
+            self.assertEqual(job.status, "done")
+            item_b = db.get(ImportJobItem, item_b_id)
+            self.assertEqual(item_b.commit_outcome, "imported")
         finally:
             db.close()
 

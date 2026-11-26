@@ -49,8 +49,8 @@ class OpenLibraryService:
                 resp = await client.get(
                     f"{_OPENLIBRARY_URL}{path}", params=params
                 )
-            except httpx.HTTPError as exc:
-                raise DomainError(f"Falha ao contatar a OpenLibrary: {exc}") from exc
+            except httpx.HTTPError:
+                raise DomainError("Falha ao contatar a OpenLibrary.")
             if resp.status_code < 500 and resp.status_code != 429:
                 break
             await asyncio.sleep(1.0 * (attempt + 1))
@@ -60,7 +60,13 @@ class OpenLibraryService:
             return None
         if resp.status_code >= 400:
             raise DomainError(f"A OpenLibrary retornou um erro ({resp.status_code}).")
-        return resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            raise DomainError("A OpenLibrary retornou uma resposta inválida.")
+        if not isinstance(data, dict):
+            raise DomainError("A OpenLibrary retornou uma resposta inesperada.")
+        return data
 
     async def search(self, query: str) -> list[dict]:
         data = await self._get("/search.json", {"title": query, "limit": 20})

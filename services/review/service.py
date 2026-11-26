@@ -633,11 +633,9 @@ class ReviewService:
 
         response = ReviewCommitResponse()
 
-        # Fase 3A: importações manuais continuam com commit por job. Selecionar
-        # qualquer item confirma todos os itens não ignorados dele. A Fase 3B
-        # (documentada no README) passará item_ids para confirmar só os
-        # selecionados e manter o job em revisão até o restante ser tratado.
-        job_ids: list[int] = []
+        # Confirma somente os itens marcados. O job permanece em revisão
+        # enquanto sobrar item pendente.
+        job_item_ids: dict[int, list[int]] = {}
         for item_id in manual_ids:
             item = db.get(ImportJobItem, item_id)
             if item is None:
@@ -647,10 +645,9 @@ class ReviewService:
                 raise DomainError("Item de revisão não encontrado.")
             if job.status != "ready":
                 raise DomainError("Esta importação não está pronta para revisão.")
-            if job.id not in job_ids:
-                job_ids.append(job.id)
+            job_item_ids.setdefault(job.id, []).append(item.id)
 
-        for job_id in job_ids:
+        for job_id, selected_item_ids in job_item_ids.items():
             job_items = (
                 db.execute(
                     select(ImportJobItem).where(ImportJobItem.job_id == job_id)
@@ -669,7 +666,10 @@ class ReviewService:
                     db,
                     job_id,
                     user_id,
-                    ImportJobCommitRequest(add_to_backlog=add_to_backlog),
+                    ImportJobCommitRequest(
+                        add_to_backlog=add_to_backlog,
+                        item_ids=selected_item_ids,
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001 — reportado por item
                 for key in selected_keys:

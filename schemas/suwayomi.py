@@ -27,7 +27,6 @@ class SuwayomiConfigPayload(_CamelModel):
     password: str | None = None
     clear_auth: bool = False
     enabled: bool = True
-    updates_per_day: int = Field(4, ge=1, le=24)
 
 
 class SuwayomiConfigResponse(_CamelModel):
@@ -36,11 +35,9 @@ class SuwayomiConfigResponse(_CamelModel):
     username: str | None = None
     has_password: bool = False
     enabled: bool = False
-    updates_per_day: int = 4
     last_sync_at: datetime | None = None
     last_sync_status: str | None = None
     last_sync_summary: dict | None = None
-    next_sync_at: datetime | None = None
 
 
 class SuwayomiCategory(_CamelModel):

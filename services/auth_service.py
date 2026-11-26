@@ -2,11 +2,14 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 
 from models.user import User
+from models.media import Media
 from models.media_list_item import MediaListItem
 from models.import_job import ImportJob
 from models.library_sync import LibraryConnection, LibraryStatusMapping, LibrarySyncLink
 from models.suwayomi import SuwayomiAccount, SuwayomiCategoryMapping, SuwayomiMangaLink
 from schemas.user import UserCreate, UserLogin, UserUpdate
+from services.image_storage import ImageStorageService
+from services.import_jobs.storage import delete_import_path
 
 
 class AuthService:
@@ -86,8 +89,24 @@ class AuthService:
 
     @staticmethod
     def delete_user(db: Session, user_id: int) -> None:
-        """Deleta um usuário"""
+        """Deleta um usuário e os arquivos que pertencem a ele."""
         user = AuthService.get_user_by_id(db, user_id)
+
+        image_paths = [
+            row.image_path
+            for row in db.query(Media.image_path)
+            .filter(Media.user_id == user_id, Media.image_path.is_not(None))
+            .all()
+            if row.image_path
+        ]
+        import_files = [
+            row.file_path
+            for row in db.query(ImportJob.file_path)
+            .filter(ImportJob.user_id == user_id, ImportJob.file_path.is_not(None))
+            .all()
+            if row.file_path
+        ]
+
         db.query(MediaListItem).filter(MediaListItem.user_id == user_id).delete()
         db.query(SuwayomiMangaLink).filter(SuwayomiMangaLink.user_id == user_id).delete()
         db.query(SuwayomiCategoryMapping).filter(
@@ -104,3 +123,14 @@ class AuthService:
         ).delete()
         db.delete(user)
         db.commit()
+
+        # Arquivos só são removidos depois do commit: se o banco falhar, eles
+        # continuam disponíveis para uma nova tentativa.
+        image_service = ImageStorageService()
+        for path in image_paths:
+            try:
+                image_service.delete(path)
+            except Exception:  # noqa: BLE001 - caminho inválido não bloqueia a exclusão
+                pass
+        for path in import_files:
+            delete_import_path(path)

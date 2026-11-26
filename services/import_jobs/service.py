@@ -270,9 +270,6 @@ class ImportJobService:
         if job.status != "ready":
             raise DomainError("A importação não está pronta para ser confirmada.")
 
-        # Fase 3A: processa todos os itens não ignorados do job. A Fase 3B
-        # (roadmap no README) adicionará um filtro opcional por item_ids e
-        # manterá o job em revisão enquanto sobrar item pendente.
         items = (
             db.execute(
                 select(ImportJobItem)
@@ -283,8 +280,17 @@ class ImportJobService:
             .all()
         )
 
+        target_items = items
+        if data.item_ids is not None:
+            requested = list(dict.fromkeys(int(item_id) for item_id in data.item_ids))
+            by_id = {item.id: item for item in items}
+            unknown = [item_id for item_id in requested if item_id not in by_id]
+            if unknown:
+                raise DomainError("Item da importação não encontrado.")
+            target_items = [by_id[item_id] for item_id in requested]
+
         entries = []
-        for item in items:
+        for item in target_items:
             if item.ignored and item.source == "suwayomi":
                 # Ignorados manuais não entram no commit, mas precisam ficar
                 # registrados para o sync não tentar criá-los depois.
@@ -307,7 +313,7 @@ class ImportJobService:
         )
 
         outcome_by_key = {item.key: item for item in response.items}
-        for item in items:
+        for item in target_items:
             result = outcome_by_key.get(item.key)
             if result is None:
                 continue
@@ -316,12 +322,22 @@ class ImportJobService:
             item.logs_created = result.logs_created
             item.backlog_added = result.backlog_added
 
-        job.status = "done"
-        job.finished_at = utcnow()
-        job.progress_done = job.progress_total
+        # O job continua em revisão enquanto houver item não ignorado sem
+        # decisão de commit. Itens fora de item_ids permanecem intocados.
+        pending = [
+            item for item in items if not item.ignored and item.commit_outcome is None
+        ]
         job.summary_json = json.dumps(
             response.model_dump(mode="json", by_alias=True), ensure_ascii=False
         )
+        if pending:
+            job.status = "ready"
+            job.finished_at = None
+            job.progress_done = max(job.progress_total - len(pending), 0)
+        else:
+            job.status = "done"
+            job.finished_at = utcnow()
+            job.progress_done = job.progress_total
         db.flush()
         set_counts(db, job)
         db.commit()
@@ -339,10 +355,14 @@ class ImportJobService:
             job.cancel_requested = True
             job.status = "cancelled"
             job.finished_at = utcnow()
+            # Se o worker ainda estiver lendo, a remoção pode falhar; nesse
+            # caso o caminho é mantido e o worker limpa no seu encerramento.
+            delete_job_file(job)
         elif job.status == "ready":
             job.status = "cancelled"
             job.cancel_requested = True
             job.finished_at = utcnow()
+            delete_job_file(job)
         else:
             raise DomainError("Esta importação não pode mais ser cancelada.")
 

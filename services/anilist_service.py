@@ -196,8 +196,8 @@ class AniListService:
                             "Accept": "application/json",
                         },
                     )
-            except httpx.HTTPError as exc:
-                raise DomainError(f"Falha ao contatar o AniList: {exc}") from exc
+            except httpx.HTTPError:
+                raise DomainError("Falha ao contatar o AniList.")
 
             _observe_rate_limit(response.headers)
 
@@ -214,7 +214,12 @@ class AniListService:
             if response.status_code >= 400:
                 raise DomainError(f"O AniList retornou um erro ({response.status_code}).")
 
-            data = response.json()
+            try:
+                data = response.json()
+            except ValueError:
+                raise DomainError("O AniList retornou uma resposta inválida.")
+            if not isinstance(data, dict):
+                raise DomainError("O AniList retornou uma resposta inesperada.")
             if data.get("errors"):
                 message = data["errors"][0].get("message", "erro desconhecido")
                 raise DomainError(f"AniList: {message}")

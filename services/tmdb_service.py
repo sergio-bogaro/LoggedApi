@@ -20,8 +20,9 @@ class TmdbService:
             resp = await client.get(
                 f"{settings.tmdb_base_url}{path}", params=params
             )
-        except httpx.HTTPError as exc:
-            raise DomainError(f"Falha ao contatar o TMDB: {exc}") from exc
+        except httpx.HTTPError:
+            # A URL contém api_key; nunca propague a mensagem do httpx.
+            raise DomainError("Falha ao contatar o TMDB.")
 
         if resp.status_code == 401:
             raise DomainError(
@@ -34,7 +35,13 @@ class TmdbService:
         if resp.status_code >= 400:
             raise DomainError(f"O TMDB retornou um erro ({resp.status_code}).")
 
-        return resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            raise DomainError("O TMDB retornou uma resposta inválida.")
+        if not isinstance(data, dict):
+            raise DomainError("O TMDB retornou uma resposta inesperada.")
+        return data
 
     async def search_movies(
         self, query: str, api_key: str, year: int | None = None

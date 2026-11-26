@@ -1,7 +1,8 @@
 """Integração com o Suwayomi-Server.
 
 Três tabelas:
-- `suwayomi_accounts`: conexão e agendamento por usuário.
+- `suwayomi_accounts`: conexão por usuário. O agendamento é o sync global de
+  biblioteca; não há frequência própria por conta.
 - `suwayomi_category_mappings`: o que cada categoria do Suwayomi vira no Logged.
 - `suwayomi_manga_links`: vínculo entre um mangá do Suwayomi e uma `Media`, com o
   último estado aplicado para que o sync só aja quando a categoria mudar.
@@ -40,14 +41,13 @@ class SuwayomiAccount(Base):
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     password: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # Inclui a conta no botão e no agendamento do sync global.
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    updates_per_day: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
 
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # never | ok | partial | error
     last_sync_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
     last_sync_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    next_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
