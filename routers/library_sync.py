@@ -1,7 +1,7 @@
 import asyncio
 import json
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, func, select
@@ -29,6 +29,7 @@ from schemas.library_sync import (
     SyncResponse,
     SyncStatusesResponse,
     SyncStatusesUpdate,
+    SyncAction,
     SyncStatusOption,
     SyncSuggestion,
     SyncSuggestionCandidateUpdate,
@@ -37,6 +38,7 @@ from schemas.library_sync import (
     SyncSuggestionsApprove,
     SyncSuggestionsApproveResponse,
     SyncSuggestionsResponse,
+    SyncSuggestionState,
     SyncSuggestionStateUpdate,
     SyncRunResponse,
     SyncRunStartPayload,
@@ -223,7 +225,7 @@ def _suggestion_response(suggestion: LibrarySyncSuggestion) -> SyncSuggestion:
         year=suggestion.year,
         source_status=suggestion.source_status,
         source_label=suggestion.source_label,
-        action=suggestion.action,
+        action=cast(SyncAction, suggestion.action),
         target_status=suggestion.target_status,
         rating=suggestion.rating,
         review=suggestion.review,
@@ -231,7 +233,7 @@ def _suggestion_response(suggestion: LibrarySyncSuggestion) -> SyncSuggestion:
         candidate=candidate_from_json(suggestion.candidate_json),
         candidates=candidates_from_json(suggestion.candidates_json),
         source_url=suggestion.source_url,
-        review_state=suggestion.review_state,
+        review_state=cast(SyncSuggestionState, suggestion.review_state),
         origin=suggestion.origin,
         sync_run_at=suggestion.sync_run_at,
         media_id=suggestion.media_id,
@@ -476,7 +478,7 @@ def get_statuses(
                 SyncStatusOption(
                     source_status=status.key,
                     source_label=status.label,
-                    action=status.default_action,
+                    action=cast(SyncAction, status.default_action),
                     status=status.default_status,
                     position=index,
                 )
@@ -491,7 +493,7 @@ def get_statuses(
             SyncStatusOption(
                 source_status=row.source_status,
                 source_label=row.source_label,
-                action=row.action,
+                action=cast(SyncAction, row.action),
                 status=row.status,
                 position=row.position,
             )
@@ -587,6 +589,8 @@ async def sync_now(
     await asyncio.to_thread(sync_user, data.user_id, provider_id)
     db.expire_all()
     connection = _get_connection(db, data.user_id, provider_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Conexão não encontrada.")
     summary = _decode_summary(connection.last_sync_summary) or {}
     return SyncResponse(
         status=connection.last_sync_status or "ok",

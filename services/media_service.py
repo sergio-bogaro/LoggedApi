@@ -10,6 +10,7 @@ from models.enums import MediaStatusEnum, MediaTypeEnum
 from models.media_log import MediaLog
 from models.media_list_item import MediaListItem
 from schemas.media import MediaCheckItem, MediaCreate, MediaResponse, MediaUpdate, MediaWithLogsResponse
+from schemas.media_log import MediaLogResponse
 from services.image_storage import ImageStorageService
 
 
@@ -358,7 +359,7 @@ class MediaService:
             updated_at=media.updated_at,
             log_count=self._get_log_count(db, media.id),
             last_log_date=self._get_last_log_date(media),
-            logs=media.logs,
+            logs=[MediaLogResponse.model_validate(log) for log in media.logs],
             tags=[tag.name for tag in media.tags],
         )
 

@@ -626,9 +626,17 @@ class SuwayomiSyncService:
                     )
                     continue
 
-            media = media_by_id.get(link.media_id)
+            media_id = link.media_id
+            if media_id is None:
+                self._append_unmatched(
+                    summary,
+                    title,
+                    link.match_error or "Título pendente sem vínculo.",
+                )
+                continue
+            media = media_by_id.get(media_id)
             if media is None:
-                media = _get_media(db, link.media_id)
+                media = _get_media(db, media_id)
                 if media is not None:
                     media_by_id[media.id] = media
             if media is None:
@@ -641,7 +649,9 @@ class SuwayomiSyncService:
                     removed_suggestion.media_id = None
                     removed_suggestion.error = link.match_error
                     removed_suggestion.decided_at = None
-                self._append_unmatched(summary, title, link.match_error)
+                self._append_unmatched(
+                    summary, title, link.match_error or "Mídia vinculada removida."
+                )
                 continue
 
             _approve_suggestion(suggestions, suwayomi_id, media)

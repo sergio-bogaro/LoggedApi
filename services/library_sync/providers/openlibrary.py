@@ -81,6 +81,8 @@ class OpenLibraryProvider(LibraryProvider):
                         if response.status_code < 500 or attempt == 2:
                             break
                         await asyncio.sleep(1.5 * (attempt + 1))
+                    if response is None:
+                        raise DomainError("A Open Library não retornou resposta.")
                     if response.status_code == 404:
                         # Perfil privado ou sem essa estante.
                         if shelf == "want-to-read":

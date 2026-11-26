@@ -142,11 +142,11 @@ class HardcoverProvider(LibraryProvider):
             else None
         )
         release = to_date(book.get("release_date"))
-        authors = [
-            (entry.get("author") or {}).get("name")
-            for entry in book.get("contributions") or []
-            if (entry.get("author") or {}).get("name")
-        ]
+        authors: list[str] = []
+        for entry in book.get("contributions") or []:
+            author = (entry.get("author") or {}).get("name")
+            if author:
+                authors.append(str(author))
         isbn = str(
             (row.get("edition") or {}).get("isbn_13")
             or next(

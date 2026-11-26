@@ -395,7 +395,7 @@ def approve_suggestions(
             failures.append(
                 ImportFailure(
                     name=suggestion.title,
-                    reason=suggestion.error,
+                    reason=suggestion.error or "Escolha um match antes de adicionar.",
                 )
             )
             continue

@@ -1,6 +1,9 @@
 """Regras de mapeamento entre categorias do Suwayomi e o Logged."""
 
+from collections.abc import Mapping
+
 from models.enums import MediaStatusEnum
+from models.suwayomi import SuwayomiCategoryMapping
 
 ACTION_IGNORE = "ignore"
 ACTION_BACKLOG = "backlog"
@@ -66,7 +69,7 @@ def action_from_status(status: MediaStatusEnum | None, add_to_backlog: bool) -> 
     return ACTION_IGNORE
 
 
-def mapping_to_action(mapping) -> str:
+def mapping_to_action(mapping: SuwayomiCategoryMapping | None) -> str:
     """Ação exposta pela API a partir de uma linha do banco."""
     if mapping is None:
         return ACTION_IGNORE
@@ -79,7 +82,7 @@ def mapping_to_action(mapping) -> str:
 
 def resolve_action(
     manga_categories: list[dict],
-    mappings: dict[int, object],
+    mappings: Mapping[int, SuwayomiCategoryMapping],
     category_meta: dict[int, dict],
 ) -> tuple[str | None, MediaStatusEnum | None]:
     """Resolve a ação efetiva de um mangá.
@@ -95,8 +98,11 @@ def resolve_action(
 
     candidates: list[tuple[int, int, object]] = []
     for category in categories:
+        raw_id = category.get("id")
+        if raw_id is None:
+            continue
         try:
-            category_id = int(category.get("id"))
+            category_id = int(raw_id)
         except (TypeError, ValueError):
             continue
         mapping = mappings.get(category_id)

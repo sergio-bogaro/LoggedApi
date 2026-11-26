@@ -892,10 +892,11 @@ def sync_user(
         ).scalar_one_or_none()
         if connection is None:
             raise DomainError("Conexão não configurada.")
+        active_connection = connection
 
         async def _run_sync() -> dict:
             try:
-                return await engine.sync(db, connection, run_at, progress)
+                return await engine.sync(db, active_connection, run_at, progress)
             finally:
                 # O sync roda em um loop próprio (asyncio.run): fecha os clientes
                 # HTTP criados nele para não vazar conexões.

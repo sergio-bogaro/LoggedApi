@@ -346,7 +346,7 @@ def sync_all_for_user(
 
 def due_user_ids(db: Session, now: datetime | None = None) -> list[int]:
     moment = now or utcnow()
-    return (
+    return list(
         db.execute(
             select(LibrarySyncSettings.user_id).where(
                 LibrarySyncSettings.enabled.is_(True),

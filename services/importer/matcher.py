@@ -533,7 +533,12 @@ class ImportMatcher:
         original = movie.get("original_title") or movie.get("original_name") or ""
         cand_year = release_date.year if release_date else None
         resolved_score = score if score is not None else _score_match(
-            wanted_title, wanted_year, title, original, cand_year, movie.get("popularity")
+            wanted_title,
+            wanted_year,
+            title,
+            original,
+            cand_year,
+            float(movie.get("popularity") or 0),
         )
         return ImportCandidate(
             provider="tmdb",
@@ -562,7 +567,12 @@ class ImportMatcher:
         cand_year = start.year if start else None
         cover = media.get("coverImage") or {}
         resolved_score = score if score is not None else _score_match(
-            wanted_title or "", wanted_year, title, original, cand_year, media.get("popularity")
+            wanted_title or "",
+            wanted_year,
+            title,
+            original,
+            cand_year,
+            float(media.get("popularity") or 0),
         )
         return ImportCandidate(
             provider="anilist",

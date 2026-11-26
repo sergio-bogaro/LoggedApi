@@ -44,7 +44,7 @@ def _to_datetime(value: date | None) -> datetime | None:
 
 def _to_rating(value: object) -> float | None:
     try:
-        rating = float(value)  # Trakt usa 1–10
+        rating = float(str(value))  # Trakt usa 1-10
     except (TypeError, ValueError):
         return None
     return rating if rating > 0 else None

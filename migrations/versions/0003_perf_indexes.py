@@ -22,7 +22,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def _index_names() -> set[str]:
     inspector = sa.inspect(op.get_bind())
-    return {row["name"] for row in inspector.get_indexes("media_log")}
+    names: set[str] = set()
+    for row in inspector.get_indexes("media_log"):
+        name = row["name"]
+        if isinstance(name, str):
+            names.add(name)
+    return names
 
 
 def upgrade() -> None:

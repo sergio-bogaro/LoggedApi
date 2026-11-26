@@ -8,8 +8,16 @@ from services.http_client import get_async_client
 class TmdbService:
     """Proxy para a API do TMDB usando a chave resolvida (usuário ou instância)."""
 
-    async def _get(self, path: str, api_key: str, extra: dict | None = None) -> dict:
-        params: dict[str, object] = {"api_key": api_key, "language": "en-US"}
+    async def _get(
+        self,
+        path: str,
+        api_key: str,
+        extra: dict[str, str | int | float] | None = None,
+    ) -> dict:
+        params: dict[str, str | int | float] = {
+            "api_key": api_key,
+            "language": "en-US",
+        }
         if extra:
             params.update(extra)
 
@@ -46,7 +54,7 @@ class TmdbService:
     async def search_movies(
         self, query: str, api_key: str, year: int | None = None
     ) -> dict:
-        extra: dict[str, object] = {"query": query, "page": 1}
+        extra: dict[str, str | int | float] = {"query": query, "page": 1}
         if year:
             extra["year"] = year
         return await self._get("/search/movie", api_key, extra)
@@ -61,7 +69,7 @@ class TmdbService:
     async def search_tv(
         self, query: str, api_key: str, year: int | None = None
     ) -> dict:
-        extra: dict[str, object] = {"query": query, "page": 1}
+        extra: dict[str, str | int | float] = {"query": query, "page": 1}
         if year:
             extra["first_air_date_year"] = year
         return await self._get("/search/tv", api_key, extra)

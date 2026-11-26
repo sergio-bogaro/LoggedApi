@@ -7,7 +7,7 @@ atual dos jobs manuais e do sync.
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, cast
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -22,6 +22,8 @@ from schemas.review import (
     ReviewCounts,
     ReviewItem,
     ReviewItemsResponse,
+    ReviewMatch,
+    ReviewState,
 )
 from services.import_jobs.serializers import (
     candidate_from_json,
@@ -75,7 +77,7 @@ def sync_key(suggestion_id: int) -> str:
 # ── adaptação ────────────────────────────────────────────────────────────────
 
 
-def _manual_match(item: ImportJobItem) -> str:
+def _manual_match(item: ImportJobItem) -> ReviewMatch:
     if item.existing_media_id is not None:
         return "already_in_library"
     if item.selected_json:
@@ -87,7 +89,7 @@ def _manual_match(item: ImportJobItem) -> str:
     return "no_match"
 
 
-def _manual_state(item: ImportJobItem) -> str:
+def _manual_state(item: ImportJobItem) -> ReviewState:
     if item.ignored:
         return "dismissed"
     if item.commit_outcome == "failed":
@@ -151,7 +153,7 @@ def _manual_item(item: ImportJobItem, job: ImportJob) -> ReviewItem:
     )
 
 
-def _sync_match(suggestion: LibrarySyncSuggestion) -> str:
+def _sync_match(suggestion: LibrarySyncSuggestion) -> ReviewMatch:
     if suggestion.media_id is not None:
         return "already_in_library"
     candidate = candidate_for_suggestion(suggestion)
@@ -193,7 +195,7 @@ def _sync_item(suggestion: LibrarySyncSuggestion) -> ReviewItem:
         selected=selected,
         match=_sync_match(suggestion),
         error=suggestion.error,
-        state=suggestion.review_state,
+        state=cast(ReviewState, suggestion.review_state),
         ignored=suggestion.review_state == "dismissed",
         sync_run_at=suggestion.sync_run_at,
         origin=suggestion.origin,
@@ -610,7 +612,11 @@ class ReviewService:
             )
             db.expire_all()
             item = db.get(ImportJobItem, item_id)
+            if item is None:
+                raise DomainError("Item de revisão não encontrado.")
             job = db.get(ImportJob, item.job_id)
+            if job is None:
+                raise DomainError("Item de revisão não encontrado.")
             return _manual_item(item, job)
 
         suggestion = db.get(LibrarySyncSuggestion, item_id)
@@ -636,6 +642,8 @@ class ReviewService:
 
         db.expire_all()
         suggestion = db.get(LibrarySyncSuggestion, item_id)
+        if suggestion is None:
+            raise DomainError("Item de revisão não encontrado.")
         return _sync_item(suggestion)
 
     def set_state(

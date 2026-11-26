@@ -161,6 +161,7 @@ class SuwayomiProvider(ImportProvider):
                             start_date=start,
                             end_date=end,
                             status=entry_status,
+                            rating=None,
                         )
                     )
 
@@ -173,6 +174,7 @@ class SuwayomiProvider(ImportProvider):
                     source="suwayomi",
                     external_refs=refs,
                     status=entry_status,
+                    rating=None,
                     logs=logs,
                     in_backlog=action == ACTION_BACKLOG,
                     backlog_date=(

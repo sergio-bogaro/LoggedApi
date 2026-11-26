@@ -1,5 +1,5 @@
 import json
-from typing import Literal
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select
@@ -12,6 +12,7 @@ from models.library_sync import LibrarySyncSuggestion
 from models.media import Media
 from models.suwayomi import SuwayomiAccount, SuwayomiCategoryMapping, SuwayomiMangaLink
 from schemas.suwayomi import (
+    SuwayomiAction,
     SuwayomiCategoriesResponse,
     SuwayomiCategoriesUpdate,
     SuwayomiCategory,
@@ -186,12 +187,13 @@ def _build_categories_response(
                 order=int(category.get("order") or 0),
                 default=bool(category.get("default")),
                 manga_count=None if counts is None else counts.get(category_id, 0),
-                action=(
+                action=cast(
+                    SuwayomiAction,
                     mapping_to_action(mapping)
                     if mapping is not None
                     else suggest_action(
                         category.get("name") or "", bool(category.get("default"))
-                    )
+                    ),
                 ),
                 mapped=mapping is not None,
             )
@@ -208,7 +210,7 @@ def _build_categories_response(
                 order=mapping.category_order or 0,
                 default=category_id == 0,
                 manga_count=None,
-                action=mapping_to_action(mapping),
+                action=cast(SuwayomiAction, mapping_to_action(mapping)),
                 mapped=True,
             )
         )

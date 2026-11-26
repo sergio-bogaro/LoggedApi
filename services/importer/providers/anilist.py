@@ -74,7 +74,11 @@ class AniListProvider(ImportProvider):
         if not username or not username.strip():
             raise DomainError("Informe o username do AniList.")
 
-        resolved_type = media_type if media_type in self.media_types else MediaTypeEnum.ANIME
+        resolved_type: MediaTypeEnum = (
+            media_type
+            if media_type is not None and media_type in self.media_types
+            else MediaTypeEnum.ANIME
+        )
         anilist_type = "ANIME" if resolved_type == MediaTypeEnum.ANIME else "MANGA"
 
         collection = await anilist_service.get_user_list(username.strip(), anilist_type)

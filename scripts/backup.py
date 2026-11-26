@@ -212,7 +212,7 @@ def prune(directory: Path, today: date, *, dry_run: bool) -> list[Path]:
     upload_backups = list_backups(directory, UPLOADS_BACKUP_RE)
 
     keep = keep_set(
-        database_backups.keys(),
+        set(database_backups),
         today,
         settings.backup_keep_daily,
         settings.backup_keep_weekly,
