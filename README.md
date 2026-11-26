@@ -1,319 +1,378 @@
-# Logged API — Instruções para rodar (Arch Linux / Fish)
+# Logged API
 
-> Guia rápido com passos para reproduzir o ambiente, resolver problemas com `pydantic-core` (PyO3) e executar a API.
+Backend do [Logged](https://github.com/sergio-bogaro/Logged), um tracker pessoal de filmes,
+séries, animes, mangás, jogos, livros e músicas.
 
-## Comando rápido para rodar a API
+A API é responsável por:
 
-Com o ambiente virtual ativado, execute:
+- biblioteca, logs de progresso, favoritos e backlog;
+- importação de históricos e sincronização com serviços externos;
+- fila de revisão de importações e sugestões de sync;
+- upload e entrega das imagens de capa;
+- proxy das APIs do TMDB e do IGDB para manter as chaves no servidor.
 
-```bash
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
+## Stack
 
-O servidor estará disponível em http://localhost:8000
+| Tecnologia | Uso |
+|---|---|
+| Python 3.12 | Runtime |
+| FastAPI + Uvicorn | API HTTP |
+| SQLAlchemy 2 + SQLite | Persistência |
+| Alembic | Migrações de schema |
+| Pydantic v2 | Schemas e configuração |
 
 ## Requisitos
-- Sistema: Arch Linux
-- Shell: Fish (instruções de ativação de venv incluem `activate.fish`)
-- Ferramentas: `git`, `curl`, compiladores (`base-devel`), `python` (usaremos `pyenv` para instalar Python 3.12.12)
 
-## Resumo da solução
-O projeto precisa de uma versão do Python compatível com PyO3 usado pelo `pydantic-core`. Se o sistema tem Python 3.14, o build nativo pode falhar. Use Python 3.11/3.12 (por exemplo 3.12.12) e recrie o virtualenv.
+Para rodar **sem Docker**:
 
-## Passo a passo (recomendado: usar `pyenv`)
+- Python **3.12** com `venv` e `pip`;
+- Git.
 
-1. Instale dependências do sistema (compile/build):
+Para rodar **com Docker**, basta Docker com Compose v2. Não é necessário instalar Python.
+O frontend é um projeto separado; veja o
+[README do LoggedApp](https://github.com/sergio-bogaro/LoggedApp/blob/master/README.md).
 
-```bash
-sudo pacman -Syu --needed base-devel openssl zlib xz libffi sqlite bzip2 tk git curl
-```
+## Rodar com Docker (recomendado)
 
-2. Instale `pyenv`:
+Os comandos são executados na raiz do repositório `Logged`.
 
-```bash
-curl https://pyenv.run | bash
-```
-
-Adicione inicialização do `pyenv` ao Fish (coloque no `~/.config/fish/config.fish`):
-
-```fish
-set -x PYENV_ROOT $HOME/.pyenv
-set -x PATH $PYENV_ROOT/bin $PATH
-status --is-interactive; and pyenv init --path | source
-status --is-interactive; and pyenv init - | source
-```
-
-Depois abra um novo terminal ou recarregue o `config.fish`:
+**Build local (desenvolvimento):**
 
 ```bash
-source ~/.config/fish/config.fish
+docker compose up -d --build
 ```
 
-3. Instale Python 3.12.12 com `pyenv` e defina localmente:
+**Imagens publicadas (deploy):**
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+Esses comandos usam o compose do repositório principal. Se você clonou apenas a API, siga
+a seção [Rodar localmente](#rodar-localmente-sem-docker) ou construa a imagem diretamente
+com `docker build -t logged-api .`.
+
+No build local, a API fica exposta em **http://localhost:8000**. No deploy, apenas o
+frontend é exposto (porta 5173 por padrão) e a API é acessada pelo proxy do Nginx na mesma
+porta do frontend (`/docs`).
+
+O container da API executa, nesta ordem:
+
+1. backup do banco e dos uploads;
+2. verificação do estado do schema;
+3. `alembic upgrade head`;
+4. Uvicorn em `0.0.0.0:8000`.
+
+Se o backup falhar, o startup é interrompido antes das migrações. Os dados ficam no volume
+`logged_data`, montado em `/data`:
+
+```text
+/data/logged.db      banco SQLite
+/data/uploads/       imagens
+/data/backups/       backups automáticos
+```
+
+Comandos úteis:
+
+```bash
+docker compose logs -f api
+docker compose exec api alembic current
+docker compose exec api python scripts/backup.py
+docker compose restart api
+```
+
+> Em stacks com o compose de deploy, acrescente
+> `-f deploy/docker-compose.yml` a cada comando ou execute dentro da pasta `deploy/`.
+
+## Rodar localmente (sem Docker)
+
+### 1. Prepare o Python 3.12
+
+Confirme a versão:
+
+```bash
+python --version
+```
+
+Se o sistema tiver Python 3.13/3.14, use uma instalação 3.12. No Linux/macOS, o `pyenv` é
+uma opção:
 
 ```bash
 pyenv install 3.12.12
 pyenv local 3.12.12
 ```
 
-4. Recrie e ative o virtualenv no diretório do projeto (`LoggedApi`):
+No Windows, instale o Python 3.12 e use `py -3.12`. Para listar as versões disponíveis:
 
-```bash
-cd /home/serjo/Documentos/git/Logged/LoggedApi
-rm -rf .venv
-python -m venv .venv
-source .venv/bin/activate.fish
+```powershell
+py -0p
 ```
 
-5. Atualize `pip` e instale dependências:
+### 2. Crie o ambiente virtual e instale as dependências
+
+**Linux / macOS:**
 
 ```bash
+cd LoggedApi
+python3.12 -m venv .venv
+source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Se ocorrer erro de build do `pydantic-core` relacionado ao PyO3 detectando Python 3.14, é sinal que o venv ainda está usando Python 3.14 — confirme com:
+No **Fish**, a ativação é:
+
+```fish
+source .venv/bin/activate.fish
+```
+
+**Windows (PowerShell):**
+
+```powershell
+cd LoggedApi
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Se o PowerShell bloquear a ativação:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+### 3. Configure o `.env`
+
+O arquivo é opcional para o funcionamento básico, mas é útil para personalizar o ambiente:
+
+**Linux / macOS:**
 
 ```bash
-python --version
-.venv/bin/python --version
+cp .env.example .env
 ```
 
-Se estiver em 3.14, recrie o venv usando o `python` provido pelo `pyenv` (veja `pyenv local` acima) e repita os passos.
+**Windows:**
 
-6. Rodar a API:
+```powershell
+Copy-Item .env.example .env
+```
+
+O exemplo já funciona para desenvolvimento local. Ajuste ou deixe em branco as chaves de
+integração que não for usar (o `.env.example` traz placeholders para o IGDB). As variáveis
+mais importantes estão em [Configuração](#configuração).
+
+### 4. Aplique as migrações e suba a API
 
 ```bash
-# com venv ativado
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-7. Testar endpoints:
-
-```bash
-# Health
-curl http://localhost:8000/health
-# Root
-curl http://localhost:8000/
-```
-
-## Alternativa rápida (não recomendada)
-Forçar a compatibilidade ABI quando não puder trocar de Python (pode causar problemas):
-
-```bash
-env PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 python -m pip install -r requirements.txt
-```
-
-## Problemas comuns e soluções
-- Erro: `the configured Python interpreter version (3.14) is newer than PyO3's maximum supported version (3.13)` → Solução: usar Python 3.11/3.12 via `pyenv` ou sistema.
-- Erro: `Unknown command: pip` no Fish → certifique-se de ativar o venv com `source .venv/bin/activate.fish` ou usar `.venv/bin/python -m pip`.
-- Arquivo estranho em `.venv/bin` (ex: `𝜋thon`) — remova se for indesejado:
-
-```bash
-ls -la .venv/bin
-rm .venv/bin/𝜋thon
-```
-
-## Variáveis de ambiente
-O projeto lê `.env` (via `pydantic-settings`). Variáveis úteis:
-- `DATABASE_URL` (ex: `sqlite:///./logged.db`)
-- `UPLOAD_DIR` (ex: `./uploads`)
-- `IMPORT_DIR` (opcional, ex: `./imports`) — arquivos temporários das importações em background, fora do `/uploads` público
-- `IMPORT_JOB_WORKER_ENABLED` (padrão `true`) — worker que processa os jobs de importação em background
-- `LIBRARY_SYNC_SCHEDULER_ENABLED` (padrão `true`) — agendador do sync global
-- `LIBRARY_SYNC_REQUEST_TIMEOUT` (padrão `20`) — timeout, em segundos, das chamadas aos provedores
-- `CORS_ORIGINS` (JSON string)
-- `BACKUP_DIR` (padrão `./backups`; em Docker `/data/backups`)
-- `BACKUP_ON_STARTUP` (padrão `true`) — backup antes das migrações no entrypoint
-- `BACKUP_INCLUDE_UPLOADS` (padrão `true`) — incluir as imagens no pacote de backup
-- `BACKUP_KEEP_DAILY` / `BACKUP_KEEP_WEEKLY` / `BACKUP_KEEP_MONTHLY` (padrão `7`/`4`/`3`)
-- `MAX_UPLOAD_MB` (padrão `10`) - limite de upload de imagens; se aumentar, ajuste também `client_max_body_size` em `LoggedApp/nginx.conf`
-- `ALLOW_PRIVATE_IMAGE_URLS` (padrão `false`) - permite baixar capas de loopback/rede privada; ative apenas para servidores de capa na LAN
-- `LOG_LEVEL` (padrão `INFO`) - nível do logging da API, workers e scripts
-
-Exemplo de `.env` mínimo:
-
-```
-DATABASE_URL=sqlite:///./logged.db
-UPLOAD_DIR=./uploads
-CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
-```
-
-## Paginação e erros da API
-
-- `GET /api/media/` e `GET /api/media-logs/` retornam no máximo 500 itens por
-  página (`limit`, padrão 200) e aceitam `offset`. O frontend busca a biblioteca
-  completa em blocos de 500 quando precisa de todos os itens.
-- Erros esperados de regra de negócio levantam `DomainError`
-  (`domain_errors.py`) e viram `400 {"detail": "..."}`. Qualquer outra exceção
-  vira 500 e fica no log com traceback — um bug de programação não é mais
-  disfarçado de erro do usuário.
-
-## Observações finais- Você já confirmou que a instalação funcionou com `Python 3.12.12` — ótimo; agora basta ativar o venv e rodar `uvicorn`.
-- Se quiser, posso (a) iniciar o servidor aqui na sessão, (b) criar um script `make` ou `scripts/run.sh` para facilitar, ou (c) commitar o `README.md`. Diga qual prefere.
-
-## Importação e sincronização de bibliotecas
-
-A página **Importar** tem duas abas: **Importar** e **Revisão**.
-
-### Importar
-
-Aceita arquivo, username ou URL, dependendo do provedor. A leitura e o matching
-rodam em background e o job fica salvo; se sair da página, o toast e o badge da
-sidebar levam de volta à revisão. O histórico de jobs manuais fica nesta aba.
-
-Provedores: Letterboxd, AniList, MyAnimeList, Goodreads, Trakt, IMDb, Grouvee e
-Infinite Backlog (arquivo); AniList (username); Suwayomi (URL); Kitsu, Simkl,
-Hardcover e Open Library (conexão já configurada em Integrações).
-
-### Revisão
-
-Fila única para jobs manuais prontos e sugestões do sync. Filtros: Pendentes,
-Match 100%, Precisa validar, Sem match, Aprovados, Ignorados e Todos. Dá para
-aprovar em lote, trocar o candidato, buscar outro match, ignorar e restaurar.
-Itens manuais são confirmados em conjunto por job; itens do sync são confirmados
-individualmente. A API unificada fica em `/api/review`.
-
-Os matches são classificados em **Match 100%**, **Precisa validar**, **Sem
-match** e **Já na biblioteca**. O commit continua usando o mesmo gravador da
-importação manual: mídia, logs, backlog e vínculo de sync são criados juntos.
-
-#### API de revisão
-
-A revisão unificada fica em `/api/review`:
-
-- `GET /api/review/items` — lista paginada com filtros de estado, match, origem,
-  provedor, tipo de mídia e busca;
-- `GET /api/review/counts` — contadores de tarefas e itens usados pela sidebar,
-  pela aba Revisão e pelos filtros;
-- `PATCH /api/review/items/{key}` — escolhe candidato ou ignora/restaura um item;
-- `POST /api/review/state` — ignorar/restaurar em lote;
-- `POST /api/review/commit` — confirma itens manuais e do sync no mesmo pedido.
-
-A camada de serviço lê as tabelas existentes (`import_job_items` e
-`library_sync_suggestions`) e as expõe no mesmo contrato `ReviewItem`. Os
-endpoints antigos de importação e de sugestões continuam disponíveis.
-
-#### Fase 3B — commit item a item para importações manuais (não implementado)
-
-Na Fase 3A, selecionar qualquer item de um job manual confirma **todos os itens
-não ignorados daquele job**. Itens do sync são confirmados individualmente. A
-interface mostra um aviso explícito sobre esse comportamento.
-
-A Fase 3B, quando necessária, permitirá confirmar apenas os itens selecionados
-de um job manual:
-
-- o job continua em revisão enquanto houver itens pendentes;
-- o job vira `done` somente quando todos os itens forem confirmados ou
-  ignorados;
-- `ImportJobCommitRequest` ganha um `item_ids` opcional;
-- `ImportJobService.commit` processa apenas os itens informados e calcula o
-  status restante do job;
-- `ReviewService.commit` repassa os itens manuais selecionados;
-- `summary_json` e `counts_json` são atualizados após cada commit parcial;
-- a UI remove o aviso de confirmação conjunta e permite seleção item a item;
-- testes cobrem commit parcial, conclusão do job, idempotência e
-  compatibilidade com o wizard antigo.
-
-A primeira versão da 3B não deve exigir novas colunas no banco: `commit_outcome`
-e `ignored` já permitem derivar o que falta revisar.
-
-#### Fase 3C — tabela física de revisão (opcional)
-
-Só será avaliada se a API de adaptação tiver problema de performance. Envolveria
-uma tabela `review_items`, backfill das duas fontes e escrita dupla durante a
-transição. As tabelas originais continuariam como auditoria.
-
-### Sincronização automática
-
-Em **Configurações → Integrações**:
-
-- ative o sync global;
-- defina o horário inicial e a frequência (1–24x por dia); os horários são
-  fixos a partir do horário inicial;
-- escolha quais provedores participam do sync geral;
-- use **Sincronizar tudo** para executar os provedores incluídos em sequência.
-
-**Sincronizar agora** em um provedor funciona mesmo sem ele participar do sync
-geral. O Suwayomi participa quando a conta está configurada e habilitada e
-segue o mesmo horário/frequência do sync global; não existe agenda própria por
-conta.
-
-Cada execução roda em background e abre um diálogo com progresso por provedor e
-por item. **Continuar em segundo plano** fecha o diálogo sem cancelar; clicar de
-novo em um botão de sync reabre a execução ativa. Syncs agendados aparecem no
-mesmo diálogo. O estado é mantido em memória: reiniciar a API perde o progresso
-e a execução em andamento.
-
-Provedores: AniList, MyAnimeList, Kitsu, Trakt, Simkl, Letterboxd, Hardcover,
-Open Library e Suwayomi. Trakt e Simkl usam OAuth device; Hardcover usa token
-pessoal; MyAnimeList usa Client ID.
-
-O sync do Letterboxd é parcial: o RSS traz apenas os ~50 diários mais recentes
-e não inclui a watchlist. Para o histórico completo, use a importação do ZIP
-exportado pelo Letterboxd em **Importar**.
-
-Variáveis de ambiente para os apps OAuth/Client ID:
-
-```env
-TRAKT_CLIENT_ID=
-TRAKT_CLIENT_SECRET=
-SIMKL_CLIENT_ID=
-SIMKL_CLIENT_SECRET=
-MAL_CLIENT_ID=
-```
-
-Trakt e Simkl usam o fluxo de device code: o app mostra um código e o usuário
-aprova no site. O token do Hardcover é criado nas configurações da conta do
-próprio Hardcover.
-
-### Como o sync decide o que fazer
-
-O sync nunca cria mídia sozinho. Todo título remoto que ainda não existe no
-Logged vira uma sugestão pendente em **Importar → Revisão**, inclusive os
-matches exatos. A revisão usa o mesmo commit da importação manual: ao aprovar,
-a mídia, os logs, o backlog e o vínculo de sync são criados juntos.
-
-- títulos já vinculados recebem status, backlog e logs conforme o mapeamento;
-- logs são criados quando o provedor fornece datas de início/fim/leitura;
-- alterações manuais são preservadas até o status de origem mudar;
-- só o backlog criado pelo próprio sync é removido por ele;
-- títulos novos que aparecerem depois também entram na revisão.
-
-Depois de conectar uma integração, a UI sugere a **sincronização inicial**. Ela
-não cria títulos direto: apenas popula a fila de revisão. O Suwayomi segue a
-mesma regra e usa as categorias como status/backlog.
-
-## Migrações de banco (Alembic)
-
-O schema **não é mais alterado no startup**. Quem aplica mudanças é o Alembic:
-
-```bash
-# aplicar migrations pendentes
 alembic upgrade head
-
-# ver a versão atual
-alembic current
-
-# conferir se o metadata dos models diverge do banco
-alembic check
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Em bancos já existentes, a baseline é marcada sem executar DDL:
+A API estará em:
+
+- **http://localhost:8000** — raiz;
+- **http://localhost:8000/health** — health check;
+- **http://localhost:8000/docs** — Swagger UI;
+- **http://localhost:8000/redoc** — ReDoc.
+
+### 5. Rode o frontend
+
+Em outro terminal:
+
+```bash
+cd LoggedApp
+npm ci
+npm run dev
+```
+
+O frontend usa `http://localhost:8000` por padrão. O CORS padrão do backend já libera
+`http://localhost:5173`.
+
+### Erro de build do `pydantic-core`
+
+Se aparecer uma mensagem como:
+
+```text
+the configured Python interpreter version (3.14) is newer than PyO3's maximum supported version
+```
+
+o virtualenv foi criado com uma versão de Python incompatível. Recrie o `.venv` com Python
+3.12 e reinstale as dependências. Evite forçar `PYO3_USE_ABI3_FORWARD_COMPATIBILITY`; use a
+versão suportada.
+
+## Testes
+
+Com o virtualenv ativado e a partir de `LoggedApi`:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Os testes criam um banco temporário a partir do metadata dos models, então não é preciso
+subir a API nem aplicar migrações antes. A imagem do container não inclui a pasta `tests/`
+(veja o `.dockerignore`), então rode os testes localmente, fora do container.
+
+## Migrações (Alembic)
+
+O schema **não é criado nem alterado no startup**. Quem aplica as mudanças é o Alembic.
+
+```bash
+alembic upgrade head    # aplica migrações pendentes
+alembic current         # mostra a revisão atual
+alembic check           # compara os models com o banco
+```
+
+Para criar uma nova revisão depois de alterar os models:
+
+```bash
+alembic revision --autogenerate -m "descrição da mudança"
+alembic upgrade head
+```
+
+### Bancos antigos (antes do Alembic)
+
+Se o banco já existe mas não tem a tabela `alembic_version`, marque a baseline **uma única
+vez** antes de aplicar as migrações:
 
 ```bash
 alembic stamp 0001_baseline
 alembic upgrade head
 ```
 
-Nunca rode `alembic upgrade head` num banco antigo sem `stamp` antes — o
-Alembic tentaria criar tabelas que já existem. O entrypoint do container detecta
-esse caso (`scripts/check_schema_state.py`) e orienta o comando correto.
+No container:
+
+```bash
+docker compose stop api
+docker compose run --rm api alembic stamp 0001_baseline
+docker compose up -d api
+```
+
+Nunca rode `alembic upgrade head` em um banco antigo sem o `stamp`: o Alembic tentaria criar
+tabelas que já existem. O entrypoint detecta esse caso com `scripts/check_schema_state.py`.
+
+## Configuração
+
+As configurações são lidas de variáveis de ambiente e do arquivo `.env` na pasta
+`LoggedApi` (via `pydantic-settings`). No Docker, o compose sobrescreve os caminhos para
+`/data`.
+
+### Aplicação
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `DATABASE_URL` | `sqlite:///./logged.db` | URL do banco SQLite |
+| `UPLOAD_DIR` | `./uploads` | Pasta pública das imagens |
+| `IMPORT_DIR` | `./imports` | Pasta temporária das importações (fora de `/uploads`) |
+| `CORS_ORIGINS` | `["http://localhost:5173","http://localhost:3000"]` | Origens permitidas, em JSON |
+| `LOG_LEVEL` | `INFO` | Nível de log (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `MAX_UPLOAD_MB` | `10` | Limite de upload de imagens |
+| `ALLOW_PRIVATE_IMAGE_URLS` | `false` | Permite baixar capas de hosts privados/loopback |
+
+### Integrações
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `TMDB_API_KEY` | — | Fallback de instância para filmes |
+| `IGDB_CLIENT_ID` | — | Fallback de instância para jogos |
+| `IGDB_CLIENT_SECRET` | — | Fallback de instância para jogos |
+| `TRAKT_CLIENT_ID` / `TRAKT_CLIENT_SECRET` | — | App OAuth do Trakt |
+| `SIMKL_CLIENT_ID` / `SIMKL_CLIENT_SECRET` | — | App OAuth do Simkl |
+| `MAL_CLIENT_ID` | — | Client ID do MyAnimeList |
+| `TMDB_REQUEST_TIMEOUT` | `15` | Timeout das chamadas ao TMDB (segundos) |
+| `IGDB_REQUEST_TIMEOUT` | `15` | Timeout das chamadas ao IGDB (segundos) |
+| `SUWAYOMI_REQUEST_TIMEOUT` | `15` | Timeout das chamadas ao Suwayomi (segundos) |
+| `LIBRARY_SYNC_REQUEST_TIMEOUT` | `20` | Timeout dos provedores de sincronização (segundos) |
+
+As chaves também podem ser cadastradas **por usuário** dentro do app. O valor do usuário tem
+prioridade sobre o fallback da instância. Elas ficam salvas em texto plano no SQLite;
+proteja o acesso ao servidor e aos backups.
+
+### Backup
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `BACKUP_DIR` | `./backups` | Pasta dos backups (Docker: `/data/backups`) |
+| `BACKUP_ON_STARTUP` | `true` | Faz backup antes das migrações no startup |
+| `BACKUP_INCLUDE_UPLOADS` | `true` | Inclui as imagens no pacote de backup |
+| `BACKUP_KEEP_DAILY` | `7` | Dias de retenção diária |
+| `BACKUP_KEEP_WEEKLY` | `4` | Semanas de retenção semanal |
+| `BACKUP_KEEP_MONTHLY` | `3` | Meses de retenção mensal |
+
+### Workers
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `IMPORT_JOB_WORKER_ENABLED` | `true` | Processa jobs de importação em background |
+| `LIBRARY_SYNC_SCHEDULER_ENABLED` | `true` | Executa o sync agendado |
+
+### Exemplo mínimo
+
+```env
+DATABASE_URL=sqlite:///./logged.db
+UPLOAD_DIR=./uploads
+CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
+```
+
+Após alterar variáveis, reinicie a API local ou recrie o container com
+`docker compose up -d --force-recreate api`.
+
+## Endpoints principais
+
+| Prefixo | Função |
+|---|---|
+| `/auth` | Registro, login e usuários |
+| `/api/media` e `/api/media-logs` | Biblioteca, títulos e logs de progresso |
+| `/api/favorites` e `/api/backlog` | Favoritos e backlog |
+| `/api/import` | Importação de arquivos, usernames e URLs |
+| `/api/review` | Fila unificada de revisão de importações e sugestões de sync |
+| `/api/integrations` | Conexões e sincronização com serviços externos |
+| `/api/tmdb` e `/api/igdb` | Proxy para as APIs externas (chaves ficam no servidor) |
+| `/api/suwayomi` | Integração com Suwayomi-Server |
+| `/uploads/*` | Imagens enviadas |
+| `/health`, `/docs`, `/redoc` | Health check e documentação |
+
+Observações:
+
+- As respostas JSON usam **camelCase**; as requisições aceitam camelCase e snake_case.
+- `GET /api/media/` e `GET /api/media-logs/` são paginados: `limit` padrão 200, máximo 500,
+  e `offset`.
+- Erros de regra de negócio retornam `400 {"detail": "..."}`. Erros inesperados retornam
+  `500` e ficam registrados no log com traceback.
+- A autenticação é intencionalmente simples, para uso pessoal: login por usuário/senha e
+  `user_id` nas requisições, sem JWT. **Não exponha a porta 8000 diretamente na internet**;
+  use o proxy do Nginx na porta 5173.
+
+### Uploads de imagens
+
+- Formatos: `.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`.
+- Tamanho máximo: 10 MB (ajustável com `MAX_UPLOAD_MB`; o `client_max_body_size` do Nginx
+  também precisa ser ajustado).
+- O conteúdo é validado por magic bytes, não apenas pela extensão.
+- Downloads por URL bloqueiam loopback e redes privadas, a menos que
+  `ALLOW_PRIVATE_IMAGE_URLS=true`.
+
+## Importação, sincronização e revisão
+
+A página **Importar** do app tem duas abas:
+
+- **Importar** — aceita arquivo, username ou URL, conforme o provedor. O processamento roda
+  em background e o job fica salvo.
+- **Revisão** — fila única para jobs manuais e sugestões do sync, com filtros por estado e
+  qualidade do match. A API unificada fica em `/api/review`.
+
+Provedores de importação: Letterboxd, AniList, MyAnimeList, Goodreads, Trakt, IMDb, Grouvee
+e Infinite Backlog (arquivo); AniList (username); Suwayomi (URL); Kitsu, Simkl, Hardcover e
+Open Library (conexão configurada em Integrações).
+
+O sync pode ser agendado em **Configurações → Integrações**. Ele nunca cria mídia sozinho:
+títulos novos viram sugestões na fila de revisão. Ao aprovar, mídia, logs, backlog e vínculo
+de sync são criados juntos.
 
 ## Backup e restauração
 
-O script faz um snapshot consistente do SQLite (`VACUUM INTO`, seguro com WAL e
-com a API rodando), verifica a integridade, compacta e aplica a retenção GFS:
+O script usa `VACUUM INTO` para gerar um snapshot consistente do SQLite, verifica a
+integridade, compacta o arquivo e aplica retenção GFS:
 
 ```bash
 python scripts/backup.py               # backup + poda
@@ -321,95 +380,110 @@ python scripts/backup.py --dry-run     # mostra o que faria
 python scripts/backup.py --keep-monthly 12
 ```
 
-Retenção (`BACKUP_KEEP_*`) é por **janelas de período**, não cota de arquivos:
+Retenção por janelas de período (não por quantidade de arquivos):
 
-- `DAILY=7`: todos os backups dos últimos 7 dias;
-- `WEEKLY=4`: o mais recente de cada uma das últimas 4 semanas ISO;
-- `MONTHLY=3`: o mais recente de cada um dos últimos 3 meses.
+- `BACKUP_KEEP_DAILY=7` — todos os backups dos últimos 7 dias;
+- `BACKUP_KEEP_WEEKLY=4` — o mais recente de cada uma das últimas 4 semanas;
+- `BACKUP_KEEP_MONTHLY=3` — o mais recente de cada um dos últimos 3 meses.
 
-O conjunto final é a união dos três. Com `7/4/3` e backups diários, ficam ~11–12
-arquivos (~2–3 MB cada). Arquivos fora do padrão `logged-AAAA-MM-DD.db.gz` nunca
-são apagados.
+Arquivos fora do padrão `logged-AAAA-MM-DD.db.gz` / `uploads-AAAA-MM-DD.tar.gz` nunca são
+apagados.
 
-### Restauração
+### Restauração com bind mount
+
+> Nos comandos abaixo, acrescente `-f deploy/docker-compose.yml` se estiver usando o compose
+> de deploy.
+
+Se os dados estão visíveis no host, considere `/caminho` como a pasta montada em `/data`:
 
 ```bash
 docker compose stop api
-mv logged.db logged.db.bak-$(date +%F)      # guarde o atual (+ -wal/-shm)
-gunzip -c backups/logged-AAAA-MM-DD.db.gz > logged.db
-# se houver uploads no backup:
-tar -xzf backups/uploads-AAAA-MM-DD.tar.gz -C /caminho/do/data
-docker compose start api                    # aplica migrations pendentes
+
+# guarde o banco atual
+mv /caminho/logged.db /caminho/logged.db.bak-$(date +%F)
+rm -f /caminho/logged.db-wal /caminho/logged.db-shm
+
+# restaure o banco e, se existir, os uploads
+gunzip -c /caminho/backups/logged-AAAA-MM-DD.db.gz > /caminho/logged.db
+tar -xzf /caminho/backups/uploads-AAAA-MM-DD.tar.gz -C /caminho
+
+docker compose up -d api
 ```
 
-Se o backup for **anterior à adoção do Alembic** (não tem tabela
-`alembic_version`), o entrypoint para com uma mensagem clara. Nesse caso, marque
-a baseline uma única vez:
+O `tar` contém a pasta `uploads/`, por isso a extração é feita na pasta de dados (a que é
+montada em `/data`), e não dentro de `uploads/`.
+
+### Restauração com volume Docker
+
+Com o volume padrão, use um container auxiliar:
+
+```bash
+docker compose stop api
+
+# guarde o banco atual
+docker compose run --rm --no-deps api sh -c \
+  'cp /data/logged.db /data/logged.db.bak-$(date +%F)'
+
+# restaure o banco
+docker compose run --rm --no-deps api sh -c \
+  'rm -f /data/logged.db-wal /data/logged.db-shm && \
+   gunzip -c /data/backups/logged-AAAA-MM-DD.db.gz > /data/logged.db'
+
+# se o backup incluir uploads
+docker compose run --rm --no-deps api sh -c \
+  'tar -xzf /data/backups/uploads-AAAA-MM-DD.tar.gz -C /data'
+
+docker compose up -d api
+```
+
+O startup aplica as migrações pendentes. Se o backup for anterior ao Alembic (sem tabela
+`alembic_version`), marque a baseline uma única vez:
 
 ```bash
 docker compose run --rm api alembic stamp 0001_baseline
-docker compose start api
+docker compose up -d api
 ```
 
-### Agendamento diário (recomendado)
+### Backup diário
 
-O backup roda no startup do container. Para uma rotina diária, use um timer no
-host (funciona mesmo com o container parado):
-
-```ini
-# /etc/systemd/system/logged-backup.service
-[Unit]
-Description=Backup do Logged
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/docker exec logged-api python scripts/backup.py
-```
-
-```ini
-# /etc/systemd/system/logged-backup.timer
-[Unit]
-Description=Backup diário do Logged
-[Timer]
-OnCalendar=*-*-* 03:00:00
-Persistent=true
-[Install]
-WantedBy=timers.target
-```
+O backup já roda no startup. Para uma rotina diária, agende:
 
 ```bash
-sudo systemctl enable --now logged-backup.timer
+docker compose exec api python scripts/backup.py
 ```
 
-Guarde pelo menos uma cópia fora do disco do projeto (rsync para outro
-disco/NAS). Backup no mesmo disco não protege contra falha de hardware.
+Use cron ou um timer do systemd no host. Guarde ao menos uma cópia fora do servidor: backup
+no mesmo disco não protege contra falha de hardware.
 
-## Docker
+## Estrutura
 
-O `docker-compose.yml` na raiz do repositório sobe API + web (Nginx com proxy
-para a API). Os dados ficam no volume `logged-data` e os backups em
-`./backups` (bind separado).
-
-```bash
-cp .env.example .env       # ajuste as variáveis (caminhos são os do container)
-docker compose up -d --build
-docker compose logs -f api
+```text
+LoggedApi/
+├── main.py              # app FastAPI e registro dos routers
+├── config.py            # configuração via pydantic-settings
+├── routers/             # camada HTTP
+├── services/            # regras de negócio
+├── models/              # models SQLAlchemy
+├── schemas/             # schemas Pydantic
+├── migrations/          # revisões Alembic
+├── scripts/             # entrypoint, backup e checagem de schema
+└── tests/               # testes de regressão (unittest)
 ```
 
-O container da API executa, nesta ordem: **backup → `alembic upgrade head` →
-uvicorn** (`scripts/entrypoint.sh`). Se o backup falhar, o startup para antes de
-migrar.
+A arquitetura é em camadas: **router → service → model/schema**. Routers não acessam o banco
+diretamente.
 
-## Desenvolvimento local (sem Docker)
+## Problemas comuns
 
-```bash
-cd LoggedApi
-source .venv/bin/activate.fish
-alembic upgrade head
-python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
-```
-
-Os testes criam o schema direto do metadata em um banco temporário:
-
-```bash
-python -m unittest discover -s tests -v
-```
+| Sintoma | Causa / solução |
+|---|---|
+| `pydantic-core` falha ao compilar | O venv está usando Python 3.13/3.14. Recrie com Python 3.12 |
+| `Unknown command: pip` no Fish | Ative o venv com `source .venv/bin/activate.fish` ou use `.venv/bin/python -m pip` |
+| `ModuleNotFoundError` ao rodar a API | O venv não está ativado ou as dependências não foram instaladas |
+| `alembic: command not found` | Ative o venv ou use `python -m alembic`; no container, `docker compose exec api alembic` |
+| Banco antigo dá erro de tabela existente | Marque `alembic stamp 0001_baseline` antes de `upgrade head` |
+| Frontend não acessa a API | Verifique se a API está em `:8000` e se a origem está em `CORS_ORIGINS` |
+| Imagens retornam 404 | Confira `UPLOAD_DIR` e se o volume está montado em `/data` |
+| Busca de filmes/jogos falha | Configure as chaves em **Integrações** ou no `.env` e veja os logs |
+| API não sobe após reiniciar | O backup pode ter falhado. Veja `docker compose logs api` |
+| Testes não encontram tabelas | Rode a partir de `LoggedApi`; os testes criam o schema temporário |
