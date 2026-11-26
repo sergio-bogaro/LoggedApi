@@ -14,7 +14,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Callable
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, noload
+from sqlalchemy.orm import Session, lazyload
 
 from database import engine as db_engine
 from models.enums import MediaStatusEnum, MediaTypeEnum
@@ -100,7 +100,7 @@ def _get_media(db: Session, media_id: int | None) -> Media | None:
     return db.execute(
         select(Media)
         .where(Media.id == media_id)
-        .options(noload(Media.logs), noload(Media.tags))
+        .options(lazyload(Media.logs), lazyload(Media.tags))
     ).scalar_one_or_none()
 
 
@@ -788,7 +788,7 @@ class LibrarySyncEngine:
             db.execute(
                 select(Media)
                 .where(Media.user_id == user_id)
-                .options(noload(Media.logs), noload(Media.tags))
+                .options(lazyload(Media.logs), lazyload(Media.tags))
             )
             .scalars()
             .all()

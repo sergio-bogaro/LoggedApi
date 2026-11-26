@@ -2,7 +2,7 @@ import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import Session, noload
+from sqlalchemy.orm import Session, lazyload
 
 from models.media import Media
 from models.media_log import MediaLog
@@ -97,7 +97,7 @@ class MediaLogService:
         media = db.execute(
             select(Media)
             .where(Media.id == data.media_id)
-            .options(noload(Media.logs), noload(Media.tags))
+            .options(lazyload(Media.logs), lazyload(Media.tags))
         ).scalar_one_or_none()
         if not media or media.user_id != data.user_id:
             raise HTTPException(status_code=404, detail="Mídia não encontrada")

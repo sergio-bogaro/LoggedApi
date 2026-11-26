@@ -2,7 +2,7 @@ from datetime import datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.orm import Session, noload
+from sqlalchemy.orm import Session, lazyload
 
 from models.media import Media
 from models.media_list_item import MediaListItem
@@ -34,7 +34,7 @@ class MediaListService:
             .join(Media, Media.id == MediaListItem.media_id)
             .where(MediaListItem.user_id == user_id, MediaListItem.list_type == list_type)
             .order_by(MediaListItem.date_log.desc(), MediaListItem.id.desc())
-            .options(noload(Media.logs), noload(Media.tags))
+            .options(lazyload(Media.logs), lazyload(Media.tags))
         )
         rows = db.execute(query).all()
         return [self._to_response(db, item, media=media) for item, media in rows]
@@ -148,7 +148,7 @@ class MediaListService:
                 Media.type == media_type,
                 Media.user_id == user_id,
             )
-            .options(noload(Media.logs), noload(Media.tags))
+            .options(lazyload(Media.logs), lazyload(Media.tags))
         )
         return db.execute(query).scalar_one_or_none()
 

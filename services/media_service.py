@@ -2,7 +2,7 @@ from datetime import date, datetime
 
 from fastapi import HTTPException, UploadFile
 from sqlalchemy import and_, func, or_, select
-from sqlalchemy.orm import Session, aliased, noload
+from sqlalchemy.orm import Session, aliased, lazyload
 
 from models.media import Media
 from models.tag import Tag, media_tags
@@ -91,7 +91,7 @@ class MediaService:
 
         # A listagem não precisa dos logs completos; as agregações acima já
         # trazem contagem, última data e status derivado.
-        query = query.options(noload(Media.logs))
+        query = query.options(lazyload(Media.logs))
 
         rows = db.execute(query).all()
         return [

@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, noload
+from sqlalchemy.orm import Session, lazyload
 
 from database import SessionLocal
 from models.enums import MediaStatusEnum, MediaTypeEnum
@@ -146,7 +146,7 @@ def _get_media(db: Session, media_id: int) -> Media | None:
     return db.execute(
         select(Media)
         .where(Media.id == media_id)
-        .options(noload(Media.logs), noload(Media.tags))
+        .options(lazyload(Media.logs), lazyload(Media.tags))
     ).scalar_one_or_none()
 
 
@@ -452,7 +452,7 @@ class SuwayomiSyncService:
             db.execute(
                 select(Media)
                 .where(Media.user_id == user_id, Media.type == MediaTypeEnum.MANGA)
-                .options(noload(Media.logs), noload(Media.tags))
+                .options(lazyload(Media.logs), lazyload(Media.tags))
             )
             .scalars()
             .all()
