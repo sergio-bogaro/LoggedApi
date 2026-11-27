@@ -2004,6 +2004,69 @@ class SuwayomiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 204)
 
+    def test_provider_test_failure_marks_needs_reauth(self) -> None:
+        import json
+
+        from database import SessionLocal
+        from models.library_sync import LibraryConnection
+
+        class FailingProvider:
+            async def test(self, connection):
+                raise ValueError("busca falhou")
+
+        class WorkingProvider:
+            async def test(self, connection):
+                return "someone"
+
+        user_id = self._user()
+        db = SessionLocal()
+        try:
+            db.add(
+                LibraryConnection(
+                    user_id=user_id,
+                    provider="anilist",
+                    enabled=True,
+                    updates_per_day=4,
+                    auth_json=json.dumps({"username": "someone"}),
+                    cursor_json="{}",
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        def needs_reauth() -> bool:
+            db = SessionLocal()
+            try:
+                connection = (
+                    db.query(LibraryConnection)
+                    .filter_by(user_id=user_id, provider="anilist")
+                    .one()
+                )
+                return bool(connection.needs_reauth)
+            finally:
+                db.close()
+
+        with patch(
+            "routers.library_sync.get_provider", return_value=FailingProvider()
+        ):
+            response = self.client.post(
+                "/api/integrations/anilist/test", json={"userId": user_id}
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["ok"])
+        self.assertTrue(needs_reauth())
+
+        with patch(
+            "routers.library_sync.get_provider", return_value=WorkingProvider()
+        ):
+            response = self.client.post(
+                "/api/integrations/anilist/test", json={"userId": user_id}
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["ok"])
+        self.assertFalse(needs_reauth())
+
     def test_letterboxd_partial_sync_hidden_after_manual_import(self) -> None:
         from database import SessionLocal
         from models.import_job import ImportJob

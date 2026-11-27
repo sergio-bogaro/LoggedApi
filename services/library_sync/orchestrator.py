@@ -154,7 +154,12 @@ def included_provider_ids(db: Session, user_id: int) -> list[str]:
                 LibraryConnection.provider == provider.id,
             )
         ).scalar_one_or_none()
-        if connection is not None and connection.enabled and _is_connected(connection):
+        if (
+            connection is not None
+            and connection.enabled
+            and not connection.needs_reauth
+            and _is_connected(connection)
+        ):
             result.append(provider.id)
     return result
 

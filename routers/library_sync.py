@@ -563,15 +563,10 @@ async def test_integration(
         return SyncTestResponse(ok=True, account=account)
     except Exception as exc:  # noqa: BLE001 — reportado na UI
         db.rollback()
-        message = str(exc).lower()
-        if any(
-            token in message
-            for token in ("reconecte", "expirada", "inválido", "invalid", "token")
-        ):
-            connection = _get_connection(db, data.user_id, provider_id)
-            if connection is not None:
-                connection.needs_reauth = True
-                db.commit()
+        connection = _get_connection(db, data.user_id, provider_id)
+        if connection is not None:
+            connection.needs_reauth = True
+            db.commit()
         return SyncTestResponse(ok=False, error=str(exc))
 
 
@@ -670,8 +665,14 @@ async def oauth_poll(
         auth["account"] = account
         LibraryProvider.set_auth(connection, auth)
         db.commit()
-    except Exception:  # noqa: BLE001 — conexão já foi salva
+    except Exception as exc:  # noqa: BLE001 — reportado na UI
         db.rollback()
+        connection = _get_connection(db, data.user_id, provider_id)
+        if connection is not None:
+            connection.needs_reauth = True
+            db.commit()
+        _DEVICE_FLOWS.pop((data.user_id, provider_id), None)
+        return OAuthPollResponse(status="error", error=str(exc))
 
     _DEVICE_FLOWS.pop((data.user_id, provider_id), None)
     return OAuthPollResponse(status="connected", account=account)
