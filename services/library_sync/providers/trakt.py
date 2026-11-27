@@ -29,6 +29,7 @@ _API = "https://api.trakt.tv"
 _AUTH = "https://api.trakt.tv"
 _REDIRECT = "urn:ietf:wg:oauth:2.0:oob"
 _PAGE = 250
+_MAX_PAGES = 1000
 
 
 def _now() -> datetime:
@@ -203,14 +204,29 @@ class TraktProvider(LibraryProvider):
     async def _paged(self, connection: LibraryConnection, path: str) -> list[dict]:
         results: list[dict] = []
         page = 1
-        while True:
+        while page <= _MAX_PAGES:
             data = await self._get(
                 connection, path, {"page": page, "limit": _PAGE, "extended": "full"}
             )
-            rows = data if isinstance(data, list) else []
-            results.extend(rows)
-            if len(rows) < _PAGE:
+            if isinstance(data, list):
+                rows = data
+            elif isinstance(data, dict):
+                # Alguns endpoints do Trakt já devolveram objeto com listas
+                # por tipo; normaliza para não perder a paginação.
+                rows = []
+                for key in ("shows", "movies", "seasons", "episodes"):
+                    value = data.get(key)
+                    if isinstance(value, list):
+                        rows = value
+                        break
+            else:
+                rows = []
+            if not rows:
                 break
+            results.extend(rows)
+            # Não usa os headers de contagem: o Trakt documenta que alguns
+            # endpoints devolvem contagens placeholder. A página vazia é o
+            # critério confiável para encerrar.
             page += 1
         return results
 

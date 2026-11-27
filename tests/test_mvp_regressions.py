@@ -347,6 +347,28 @@ class ApiRegressionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(len(response.json()["entries"]), 2)
 
+    def test_import_providers_hide_sync_covered_sources(self) -> None:
+        from services.importer.registry import get_provider
+
+        response = self.client.get("/api/import/providers")
+        self.assertEqual(response.status_code, 200, response.text)
+        providers = {item["id"] for item in response.json()}
+        self.assertEqual(
+            providers,
+            {
+                "letterboxd",
+                "goodreads",
+                "imdb",
+                "grouvee",
+                "infinitebacklog",
+            },
+        )
+        self.assertTrue(all(item["inputType"] == "file" for item in response.json()))
+
+        # Fontes ocultas continuam resolvendo para jobs e chamadas antigas.
+        self.assertEqual(get_provider("anilist").id, "anilist")
+        self.assertEqual(get_provider("suwayomi").id, "suwayomi")
+
     def test_invalid_text_date_returns_422(self) -> None:
         user_id = self._user()
         response = self.client.post(
@@ -390,6 +412,122 @@ class ImportProviderTests(unittest.TestCase):
             {entry.media_type for entry in preview.entries},
             {MediaTypeEnum.ANIME, MediaTypeEnum.MANGA},
         )
+
+    def test_goodreads_maps_shelf_rating_and_dates(self) -> None:
+        from services.importer.providers.goodreads import GoodreadsProvider
+
+        csv_data = (
+            "Title,Author,ISBN13,ISBN,My Rating,My Review,Exclusive Shelf,"
+            "Date Read,Date Added,Book Id\n"
+            "Dune,Frank Herbert,9780441013593,,5,Great,read,"
+            "2024-01-02,2023-12-01,1\n"
+        ).encode()
+        preview = asyncio.run(
+            GoodreadsProvider().parse_file("goodreads.csv", csv_data)
+        )
+
+        self.assertEqual(preview.counts.total, 1)
+        entry = preview.entries[0]
+        self.assertEqual(entry.title, "Dune")
+        self.assertEqual(entry.rating, 10.0)
+        self.assertEqual(entry.status.value, "finished")
+        self.assertEqual(entry.logs[0].date.isoformat(), "2024-01-02")
+        self.assertEqual(entry.external_refs["isbn13"], "9780441013593")
+
+    def test_imdb_maps_ratings_and_ignores_other_types(self) -> None:
+        from services.importer.providers.imdb import ImdbProvider
+
+        csv_data = (
+            "Const,Title,Title Type,Year,Your Rating,Date Rated\n"
+            "tt0133093,The Matrix,movie,1999,9,2024-01-02\n"
+            "tt0944947,Game of Thrones,tvSeries,2011,10,2024-01-03\n"
+            "tt1234567,Some Video Game,videoGame,2020,8,2024-01-04\n"
+        ).encode()
+        preview = asyncio.run(ImdbProvider().parse_file("ratings.csv", csv_data))
+
+        self.assertEqual(len(preview.entries), 2)
+        by_title = {entry.title: entry for entry in preview.entries}
+        self.assertEqual(by_title["The Matrix"].rating, 9.0)
+        self.assertEqual(by_title["Game of Thrones"].media_type, MediaTypeEnum.SERIES)
+        self.assertNotIn("Some Video Game", by_title)
+
+    def test_grouvee_maps_shelves_and_rating(self) -> None:
+        import csv as csv_module
+        import io
+        import json
+
+        from services.importer.providers.grouvee import GrouveeProvider
+
+        buffer = io.StringIO()
+        writer = csv_module.writer(buffer)
+        writer.writerow(
+            [
+                "id",
+                "name",
+                "shelves",
+                "platforms",
+                "rating",
+                "review",
+                "dates",
+                "statuses",
+                "genres",
+                "franchises",
+                "developers",
+                "publishers",
+                "release_date",
+                "url",
+                "giantbomb_id",
+            ]
+        )
+        writer.writerow(
+            [
+                "1",
+                "Chrono Trigger",
+                json.dumps({"Played": {"date_added": "2024-01-02"}}),
+                "SNES",
+                "5",
+                "Classic",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "1995-03-11",
+                "https://example.com/game",
+                "123",
+            ]
+        )
+        preview = asyncio.run(
+            GrouveeProvider().parse_file("grouvee.csv", buffer.getvalue().encode())
+        )
+
+        entry = preview.entries[0]
+        self.assertEqual(entry.title, "Chrono Trigger")
+        self.assertEqual(entry.rating, 10.0)
+        self.assertEqual(entry.year, 1995)
+        self.assertEqual(entry.status.value, "finished")
+        self.assertEqual(entry.logs[0].date.isoformat(), "2024-01-02")
+
+    def test_infinite_backlog_maps_status_and_rating_scale(self) -> None:
+        from services.importer.providers.infinite_backlog import (
+            InfiniteBacklogProvider,
+        )
+
+        csv_data = (
+            "Title,Status,Rating,Release Year,Date Finished,Review\n"
+            "Hades,Played,9,2020,2024-01-02,Mythology\n"
+            "Celeste,Backlog,,2018,,Platformer\n"
+        ).encode()
+        preview = asyncio.run(
+            InfiniteBacklogProvider().parse_file("backlog.csv", csv_data)
+        )
+
+        by_title = {entry.title: entry for entry in preview.entries}
+        self.assertEqual(by_title["Hades"].rating, 9.0)
+        self.assertEqual(by_title["Hades"].status.value, "finished")
+        self.assertTrue(by_title["Celeste"].in_backlog)
+        self.assertEqual(preview.counts.backlog, 1)
 
     def test_letterboxd_invalid_zip_raises_value_error(self) -> None:
         with self.assertRaises(ValueError):
@@ -1905,6 +2043,235 @@ class SuwayomiTests(unittest.TestCase):
         self.assertEqual(item.year, 2020)
         self.assertEqual(item.watched_at, date(2020, 5, 3))
 
+    def test_mal_provider_maps_list_status(self) -> None:
+        from services.library_sync.providers.mal import MalProvider
+
+        items: dict = {}
+        MalProvider()._add(
+            items,
+            {
+                "node": {
+                    "id": 123,
+                    "title": "Anime",
+                    "alternative_titles": {"en": "Anime EN"},
+                    "start_date": "2020-04-02",
+                    "main_picture": {"medium": "cover.jpg"},
+                    "synopsis": "Sinopse",
+                },
+                "list_status": {
+                    "status": "completed",
+                    "score": 9,
+                    "comments": "Muito bom",
+                    "start_date": "2024-01-01",
+                    "finish_date": "2024-01-03",
+                },
+            },
+            MediaTypeEnum.ANIME,
+        )
+
+        item = items["mal:123"]
+        self.assertEqual(item.title, "Anime")
+        self.assertEqual(item.status, "completed")
+        self.assertEqual(item.rating, 9.0)
+        self.assertEqual(item.review, "Muito bom")
+        self.assertEqual(item.year, 2020)
+        self.assertEqual(item.external_refs["malId"], "123")
+        self.assertEqual(item.watched_at.isoformat(), "2024-01-03")
+
+    def test_kitsu_provider_maps_library_entry(self) -> None:
+        from models.enums import MediaTypeEnum
+        from services.library_sync.providers.kitsu import KitsuProvider
+
+        items: dict = {}
+        KitsuProvider()._add(
+            items,
+            {
+                "id": "entry-1",
+                "attributes": {
+                    "status": "completed",
+                    "ratingTwenty": "18",
+                    "notes": "Bom",
+                    "startedAt": "2024-01-01",
+                    "finishedAt": "2024-01-03",
+                },
+                "relationships": {"anime": {"data": {"id": "anime-1"}}},
+            },
+            {
+                ("anime", "anime-1"): {
+                    "attributes": {
+                        "canonicalTitle": "Anime",
+                        "titles": {"en": "Anime EN"},
+                        "startDate": "2020-04-02",
+                        "synopsis": "Sinopse",
+                        "posterImage": {"medium": "cover.jpg"},
+                    }
+                }
+            },
+        )
+
+        item = items["kitsu:entry-1"]
+        self.assertEqual(item.media_type, MediaTypeEnum.ANIME)
+        self.assertEqual(item.title, "Anime")
+        self.assertEqual(item.status, "completed")
+        self.assertEqual(item.rating, 9.0)
+        self.assertEqual(item.review, "Bom")
+        self.assertEqual(item.external_refs["kitsuId"], "anime-1")
+        self.assertEqual(item.watched_at.isoformat(), "2024-01-03")
+
+    def test_hardcover_provider_maps_user_book(self) -> None:
+        from services.library_sync.providers.hardcover import HardcoverProvider
+
+        items: dict = {}
+        HardcoverProvider()._add(
+            items,
+            {
+                "id": 7,
+                "status_id": 3,
+                "rating": 4.5,
+                "review": "Ótimo",
+                "last_read_date": "2024-01-03",
+                "edition": {"isbn_13": "9780441013593"},
+                "book": {
+                    "id": 42,
+                    "title": "Duna",
+                    "release_date": "1965-08-01",
+                    "image": {"url": "cover.jpg"},
+                    "contributions": [{"author": {"name": "Frank Herbert"}}],
+                },
+            },
+        )
+
+        item = items["hardcover:7"]
+        self.assertEqual(item.title, "Duna")
+        self.assertEqual(item.status, "3")
+        self.assertEqual(item.rating, 9.0)
+        self.assertEqual(item.review, "Ótimo")
+        self.assertEqual(item.overview, "Frank Herbert")
+        self.assertEqual(item.external_refs["isbn13"], "9780441013593")
+        self.assertEqual(item.watched_at.isoformat(), "2024-01-03")
+
+    def test_openlibrary_provider_maps_reading_log(self) -> None:
+        from services.library_sync.providers.openlibrary import OpenLibraryProvider
+
+        items: dict = {}
+        priorities: dict = {}
+        OpenLibraryProvider()._add(
+            items,
+            priorities,
+            {
+                "work": {
+                    "key": "/works/OL123W",
+                    "title": "Livro",
+                    "author_names": ["Autora"],
+                    "first_publish_year": 2020,
+                    "cover_id": 99,
+                }
+            },
+            "already-read",
+            "Já li",
+            "finished",
+            4,
+        )
+
+        item = items["OL123W"]
+        self.assertEqual(item.media_type, MediaTypeEnum.BOOK)
+        self.assertEqual(item.title, "Livro")
+        self.assertEqual(item.status, "already-read")
+        self.assertEqual(item.external_id, "OL123W")
+        self.assertEqual(item.overview, "Autor: Autora")
+        self.assertEqual(
+            item.cover_url, "https://covers.openlibrary.org/b/id/99-M.jpg"
+        )
+
+    def test_trakt_paged_continues_after_short_pages(self) -> None:
+        import asyncio
+
+        from models.library_sync import LibraryConnection
+        from services.library_sync.providers.trakt import TraktProvider
+
+        connection = LibraryConnection(
+            user_id=1, provider="trakt", auth_json="{}"
+        )
+        provider = TraktProvider()
+        calls: list[tuple[str, int]] = []
+
+        async def fake_get(_connection, path, params=None):
+            page = int((params or {}).get("page") or 1)
+            calls.append((path, page))
+            if page == 1:
+                return [{"id": index} for index in range(100)]
+            if page == 2:
+                return [{"id": 100}]
+            return []
+
+        provider._get = fake_get  # type: ignore[method-assign]
+        rows = asyncio.run(provider._paged(connection, "/sync/progress/watched"))
+
+        self.assertEqual(len(rows), 101)
+        self.assertEqual(
+            calls,
+            [
+                ("/sync/progress/watched", 1),
+                ("/sync/progress/watched", 2),
+                ("/sync/progress/watched", 3),
+            ],
+        )
+
+    def test_trakt_fetch_uses_watched_progress_for_show_status(self) -> None:
+        import asyncio
+
+        from models.enums import MediaTypeEnum
+        from models.library_sync import LibraryConnection
+        from services.library_sync.providers.trakt import TraktProvider
+
+        connection = LibraryConnection(
+            user_id=1, provider="trakt", auth_json="{}"
+        )
+        provider = TraktProvider()
+        shows = [
+            {
+                "show": {
+                    "title": "Finished Show",
+                    "year": 2020,
+                    "ids": {"trakt": 10, "tmdb": 100},
+                },
+                "last_watched_at": "2024-01-02T10:00:00Z",
+            },
+            {
+                "show": {
+                    "title": "Watching Show",
+                    "year": 2021,
+                    "ids": {"trakt": 11, "tmdb": 101},
+                },
+                "last_watched_at": "2024-01-03T10:00:00Z",
+            },
+        ]
+        progress = [
+            {
+                "show": {"ids": {"trakt": 10}},
+                "progress": {"aired": 10, "completed": 10},
+            },
+            {
+                "show": {"ids": {"trakt": 11}},
+                "progress": {"aired": 10, "completed": 3},
+            },
+        ]
+
+        async def fake_paged(_connection, path):
+            if path == "/sync/watched/shows":
+                return shows
+            if path == "/sync/progress/watched":
+                return progress
+            return []
+
+        provider._paged = fake_paged  # type: ignore[method-assign]
+        snapshot = asyncio.run(provider.fetch(connection, {}))
+        items = {item.title: item for item in snapshot.items}
+
+        self.assertEqual(items["Finished Show"].media_type, MediaTypeEnum.SERIES)
+        self.assertEqual(items["Finished Show"].status, "watched")
+        self.assertEqual(items["Watching Show"].status, "watching")
+
     def test_simkl_anime_only_trusts_anilist_id(self) -> None:
         from datetime import date
 
@@ -2079,7 +2446,15 @@ class SuwayomiTests(unittest.TestCase):
             providers = {item["id"]: item for item in response.json()}
             return providers["letterboxd"]["syncPartial"]
 
+        def detail_sync_partial() -> bool:
+            response = self.client.get(
+                f"/api/integrations/letterboxd?user_id={user_id}"
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()["syncPartial"]
+
         self.assertTrue(sync_partial())
+        self.assertTrue(detail_sync_partial())
 
         db = SessionLocal()
         try:
@@ -2097,6 +2472,7 @@ class SuwayomiTests(unittest.TestCase):
 
         # Pronto para revisão ainda não é um import concluído.
         self.assertTrue(sync_partial())
+        self.assertTrue(detail_sync_partial())
 
         db = SessionLocal()
         try:
@@ -2108,6 +2484,14 @@ class SuwayomiTests(unittest.TestCase):
             db.close()
 
         self.assertFalse(sync_partial())
+        self.assertFalse(detail_sync_partial())
+
+        response = self.client.put(
+            "/api/integrations/letterboxd/config",
+            json={"userId": user_id, "enabled": True, "updatesPerDay": 4},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["syncPartial"])
 
     def test_sync_records_read_and_library_dates(self) -> None:
         from datetime import datetime, timezone

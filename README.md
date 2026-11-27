@@ -324,7 +324,7 @@ Após alterar variáveis, reinicie a API local ou recrie o container com
 | `/auth` | Registro, login e usuários |
 | `/api/media` e `/api/media-logs` | Biblioteca, títulos e logs de progresso |
 | `/api/favorites` e `/api/backlog` | Favoritos e backlog |
-| `/api/import` | Importação de arquivos, usernames e URLs |
+| `/api/import` | Importação por arquivo das fontes sem integração |
 | `/api/review` | Fila unificada de revisão de importações e sugestões de sync |
 | `/api/integrations` | Conexões e sincronização com serviços externos |
 | `/api/tmdb` e `/api/igdb` | Proxy para as APIs externas (chaves ficam no servidor) |
@@ -356,14 +356,16 @@ Observações:
 
 A página **Importar** do app tem duas abas:
 
-- **Importar** — aceita arquivo, username ou URL, conforme o provedor. O processamento roda
+- **Importar** — aceita os arquivos de exportação das fontes que ainda não têm sync
+  completo: Letterboxd, Goodreads, IMDb, Grouvee e Infinite Backlog. O processamento roda
   em background e o job fica salvo.
 - **Revisão** — fila única para jobs manuais e sugestões do sync, com filtros por estado e
   qualidade do match. A API unificada fica em `/api/review`.
 
-Provedores de importação: Letterboxd, AniList, MyAnimeList, Goodreads, Trakt, IMDb, Grouvee
-e Infinite Backlog (arquivo); AniList (username); Suwayomi (URL); Kitsu, Simkl, Hardcover e
-Open Library (conexão configurada em Integrações).
+Fontes com sync completo (AniList, MyAnimeList, Trakt, Kitsu, Simkl, Hardcover e Open
+Library) e o Suwayomi são configuradas em **Configurações → Integrações** e não aparecem
+na importação manual. O Letterboxd continua na importação porque o sync é parcial: o feed
+traz só os diários recentes, enquanto o ZIP exporta o histórico completo e a watchlist.
 
 O sync pode ser agendado em **Configurações → Integrações**. Ele nunca cria mídia sozinho:
 títulos novos viram sugestões na fila de revisão. Ao aprovar, mídia, logs, backlog e vínculo

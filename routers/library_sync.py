@@ -118,6 +118,19 @@ def _account(connection: LibraryConnection | None) -> str | None:
     return str(auth.get("account") or auth.get("username") or "").strip() or None
 
 
+def _completed_import_providers(db: Session, user_id: int) -> set[str]:
+    return set(
+        db.execute(
+            select(ImportJob.provider)
+            .where(
+                ImportJob.user_id == user_id,
+                ImportJob.status == "done",
+            )
+            .distinct()
+        ).scalars()
+    )
+
+
 def _info(
     provider: LibraryProvider,
     connection: LibraryConnection | None,
@@ -255,16 +268,7 @@ def list_integrations(user_id: int, db: Session = Depends(get_db)):
             .group_by(LibrarySyncSuggestion.provider)
         ).all()
     )
-    completed_imports = set(
-        db.execute(
-            select(ImportJob.provider)
-            .where(
-                ImportJob.user_id == user_id,
-                ImportJob.status == "done",
-            )
-            .distinct()
-        ).scalars()
-    )
+    completed_imports = _completed_import_providers(db, user_id)
     return [
         _info(
             provider,
@@ -424,6 +428,8 @@ def get_integration(
         provider,
         _get_connection(db, user_id, provider_id),
         pending_count(db, user_id, provider_id),
+        has_completed_import=provider_id
+        in _completed_import_providers(db, user_id),
     )
 
 
@@ -463,6 +469,8 @@ def save_config(
         provider,
         connection,
         pending_count(db, data.user_id, provider_id),
+        has_completed_import=provider_id
+        in _completed_import_providers(db, data.user_id),
     )
 
 

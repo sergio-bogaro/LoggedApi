@@ -8,9 +8,10 @@ from services.importer.providers.library_sync import LibrarySyncImportProvider
 from services.importer.providers.mal import MalProvider
 from services.importer.providers.suwayomi import SuwayomiProvider
 from services.importer.providers.trakt import TraktProvider
+from services.library_sync.registry import list_providers as list_sync_providers
 from domain_errors import DomainError
 
-_PROVIDERS: list = [
+_ALL_PROVIDERS: list = [
     LetterboxdProvider(),
     AniListProvider(),
     MalProvider(),
@@ -25,7 +26,25 @@ _PROVIDERS: list = [
     LibrarySyncImportProvider("hardcover"),
     LibrarySyncImportProvider("openlibrary"),
 ]
-_PROVIDER_MAP: dict[str, object] = {provider.id: provider for provider in _PROVIDERS}
+_PROVIDER_MAP: dict[str, object] = {
+    provider.id: provider for provider in _ALL_PROVIDERS
+}
+
+# Fontes com sincronização completa não precisam de importação manual: o sync
+# lê tudo o que o Logged armazena. O Letterboxd fica de fora porque o sync é
+# parcial (RSS recente, sem watchlist) e o ZIP ainda é necessário.
+_SYNC_COVERED_PROVIDER_IDS = {
+    provider.id
+    for provider in list_sync_providers()
+    if not provider.sync_partial
+} | {"suwayomi"}
+
+# A API pública lista apenas as fontes que ainda exigem importação manual.
+_PROVIDERS: list = [
+    provider
+    for provider in _ALL_PROVIDERS
+    if provider.id not in _SYNC_COVERED_PROVIDER_IDS
+]
 
 
 def list_providers() -> list:
